@@ -14,7 +14,6 @@ Only the first ``dim`` head features rotate; the rest pass through
 from typing import List, Sequence
 
 import mlx.core as mx
-import mlx.nn as nn
 
 
 def _interleaved_position_selector(
@@ -33,7 +32,11 @@ def rotate_half(x: mx.array) -> mx.array:
     return mx.concatenate([-x2, x1], axis=-1)
 
 
-class MRoPERotaryEmbedding(nn.Module):
+class MRoPERotaryEmbedding:
+    """Plain object (not an nn.Module): it holds no trainable parameters, and
+    keeping it out of the module tree keeps inv_freq/position_selector out of
+    the strict checkpoint load."""
+
     def __init__(
         self,
         dim: int,
