@@ -4,7 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgrimlxO</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
 <style>
+.math-raw { font-family: var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
 :root {
   --bg: #18181b; --bg2: #1f1f23; --bg3: #27272a; --border: #3f3f46;
   --text: #e4e4e7; --text2: #a1a1aa; --accent: #f97316; --accent2: #fb923c;
@@ -172,14 +176,32 @@ textarea { resize: vertical; min-height: 64px; }
 
 <script>
 "use strict";
-// ---------- mini markdown renderer (offline, no deps) ----------
+// ---------- mini markdown renderer (offline, math via KaTeX when loaded) ----------
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function renderMath(tex, display){
+  if (window.katex && window.katex.renderToString) {
+    try { return window.katex.renderToString(tex, {throwOnError:false, displayMode:display}); }
+    catch(e) {}
+  }
+  const t = display ? `<div class="math-raw">${esc(tex)}</div>` : `<span class="math-raw">${esc(tex)}</span>`;
+  return t;
+}
 function renderMD(src){
   const blocks = [];
   src = src.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     blocks.push(`<pre><code>${esc(code.replace(/\n$/,""))}</code></pre>`);
     return `\x00B${blocks.length-1}\x00`;
   });
+  const math = [];
+  const pushMath = (tex, display) => {
+    math.push(renderMath(tex, display));
+    return `\x00M${math.length-1}\x00`;
+  };
+  src = src.replace(/\$\$([\s\S]+?)\$\$/g, (_, t) => pushMath(t, true));
+  src = src.replace(/\\\[([\s\S]+?)\\\]/g, (_, t) => pushMath(t, true));
+  src = src.replace(/\\\(([\s\S]+?)\\\)/g, (_, t) => pushMath(t, false));
+  src = src.replace(/\$([^$\n]+)\$/g, (_, t) =>
+    (/^\s|\s$/.test(t) ? _ : pushMath(t, false)));
   let h = esc(src);
   h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
   h = h.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
@@ -188,8 +210,9 @@ function renderMD(src){
   h = h.replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>");
   h = h.replace(/^&gt; (.*)$/gm, "<blockquote>$1</blockquote>");
   h = h.replace(/^\s*[-*] (.*)$/gm, "<li>$1</li>").replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, "<ul>$1</ul>");
-  h = h.split(/\n{2,}/).map(part => /^\s*<(h\d|ul|blockquote|pre)/.test(part) ? part : "<p>"+part.replace(/\n/g,"<br>")+"</p>").join("");
+  h = h.split(/\n{2,}/).map(part => /^\s*<(h\d|ul|blockquote|pre|div class="math)/.test(part) ? part : "<p>"+part.replace(/\n/g,"<br>")+"</p>").join("");
   h = h.replace(/\x00B(\d+)\x00/g, (_, i) => blocks[+i]);
+  h = h.replace(/\x00M(\d+)\x00/g, (_, i) => math[+i]);
   return h;
 }
 
@@ -200,6 +223,7 @@ let generating = false;
 let abort = null;
 let props = null;
 let t0 = 0, tgen = 0, tprompt = 0;
+let usageInfo = null;   // {prompt_tps, completion_tps, prefill_ms} from the server
 
 const settings = {};
 const sids = [["temp","temp"],["topk","top_k"],["topp","top_p"],["minp","min_p"],["rep","repeat_penalty"],["maxt","n_predict"],["rb","reasoning_budget"]];
@@ -303,7 +327,7 @@ async function send(){
   let meta = null;
   generating = true; setSend();
   const ctrl = new AbortController(); abort = ctrl;
-  t0 = performance.now(); tgen = 0; tprompt = 0;
+  t0 = performance.now(); tgen = 0; tprompt = 0; usageInfo = null;
 
   try {
     const res = await fetch("/v1/chat/completions", {
@@ -335,7 +359,10 @@ async function send(){
         const data = part.slice(6);
         if (data === "[DONE]") continue;
         let j; try { j = JSON.parse(data); } catch(e) { continue; }
-        if (j.usage) { tprompt = j.usage.prompt_tokens; tgen = j.usage.completion_tokens; }
+        if (j.usage) {
+          tprompt = j.usage.prompt_tokens; tgen = j.usage.completion_tokens;
+          usageInfo = j.usage;
+        }
         const d = j.choices && j.choices[0] && j.choices[0].delta;
         if (!d) { if (j.choices && j.choices[0] && j.choices[0].finish_reason) renderMeta(msg); continue; }
         if (d.reasoning_content) {
@@ -371,9 +398,17 @@ async function send(){
 
 function renderMeta(msg){
   const dt = (performance.now() - t0) / 1000;
-  const tps = tgen > 0 && dt > 0 ? (tgen / dt).toFixed(1) : "0";
   const m = document.createElement("div"); m.className = "meta";
-  m.textContent = `prompt ${tprompt} tok · ${tgen} tok · ${tps} tok/s`;
+  let line;
+  if (usageInfo && usageInfo.prompt_tps) {
+    line = `prefill ${tprompt} tok in ${(usageInfo.prefill_ms/1000).toFixed(1)}s`
+         + ` (${usageInfo.prompt_tps} tok/s) · ${tgen} tok`
+         + ` · ${usageInfo.completion_tps || "?"} tok/s`;
+  } else {
+    const tps = tgen > 0 && dt > 0 ? (tgen / dt).toFixed(1) : "0";
+    line = `prompt ${tprompt} tok · ${tgen} tok · ${tps} tok/s`;
+  }
+  m.textContent = line;
   msg.div.appendChild(m);
 }
 

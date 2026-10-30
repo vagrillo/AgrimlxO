@@ -350,6 +350,16 @@ def cmd_serve(args, argv: List[str]):
 
     from .server import run_server
 
+    if not args.no_compile:
+        from .speed import compile_ffn
+
+        n = compile_ffn(engine.loaded.model)
+        if n:
+            _log(f"speed: mx.compile applied to {n} FFN sub-calls")
+    if not args.no_warmup:
+        engine.warmup()
+        _log("speed: warmup done")
+
     run_server(args, engine, tokenizer)
 
 

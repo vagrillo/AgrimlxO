@@ -329,6 +329,9 @@ class MoERuntime:
         self._pending_tokens: int = 0
         self._log_fh = None
         self._log_pos: List[int] = []
+        # warmup runs generation through the real model before the server
+        # listens: suspend observability so the stats window stays clean
+        self.suspended: bool = False
 
     # -- setup ---------------------------------------------------------------
 
@@ -409,11 +412,19 @@ class MoERuntime:
         ``sel_count``: [n_tokens] kept-expert counts; ``kept_ids``: [n_tokens,
         n] rank-ordered expert ids (only when the expert log is enabled).
         """
+        if self.suspended:
+            return
         st = self._stats.setdefault(layer_idx, _LayerStats())
         st.counts.append(sel_count)
         self._pending_tokens += sel_count.shape[0]
         if self._log_fh is not None and kept_ids is not None:
             st.last_ids = kept_ids
+
+    def reset_stats(self):
+        """Clear the observability window (e.g. after warmup)."""
+        self._stats.clear()
+        self._tokens_since_stats = 0
+        self._pending_tokens = 0
 
     def flush_log(self, positions: List[int]):
         """Write the buffered per-token kept-expert lists (JSONL record).
@@ -521,6 +532,8 @@ class MoERuntime:
 
     def note_tokens(self, n: int = 1):
         """Advance the processed-token counter for the stats window."""
+        if self.suspended:
+            return
         self._tokens_since_stats += n
 
     def close(self):

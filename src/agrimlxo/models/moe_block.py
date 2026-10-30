@@ -29,7 +29,7 @@ import logging
 
 import mlx.core as mx
 
-from .. import kernels
+from .. import kernels, speed
 from ..moe_expansion import expansion_post_pass, reduce_post_pass
 
 logger = logging.getLogger(__name__)
@@ -109,6 +109,6 @@ def routed_forward(
                 exc_info=True,
             )
 
-    y = switch_mlp(x, inds)
+    y = speed.maybe_compiled(switch_mlp, x, inds)
     y = (y * scores[..., None]).sum(axis=-2)
     return y, cnt

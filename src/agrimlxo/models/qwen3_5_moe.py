@@ -361,6 +361,8 @@ class SparseMoeBlock(nn.Module):
         self.shared_expert_gate = nn.Linear(dim, 1, bias=False)
 
     def __call__(self, x: mx.array) -> mx.array:
+        from .. import speed
+
         y, _ = routed_forward(
             x,
             self.gate,
@@ -372,7 +374,7 @@ class SparseMoeBlock(nn.Module):
             layer_idx=self.layer_idx,
         )
 
-        shared_y = self.shared_expert(x)
+        shared_y = speed.maybe_compiled(self.shared_expert, x)
         shared_y = mx.sigmoid(self.shared_expert_gate(x)) * shared_y
 
         return y + shared_y

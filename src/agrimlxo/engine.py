@@ -14,6 +14,7 @@ Single-model, single-stream MLX generation with:
   * MoE expansion observability (stats window driven by processed tokens).
 """
 
+import time
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Iterator, List, Optional, Tuple
@@ -58,6 +59,9 @@ class Step:
     prompt_tokens: int
     generated: int  # tokens generated so far (incl. wrap-up)
     finish_reason: Optional[str]  # "stop" | "length" | None
+    # timings (only set on the final Step): prefill/decode wall time in ms
+    prefill_ms: Optional[float] = None
+    decode_ms: Optional[float] = None
 
 
 # Margin before the reasoning budget at which the wrap-up is injected: leaves
@@ -236,6 +240,7 @@ class Engine:
         tokens: List[int] = []
         finish_reason: Optional[str] = None
         stop_hit = False
+        t_start = time.perf_counter()  # ref for the prefill timing
         total = len(prompt)  # tokens fed to the model so far
 
         # --- reasoning-budget state ---
@@ -279,6 +284,8 @@ class Engine:
             slot.caches = caches
             slot.tokens = []
             logits = forward_chunked(prompt)
+        t_prefill_done = time.perf_counter()
+        prefill_ms = (t_prefill_done - t_start) * 1000.0
 
         try:
             while True:
@@ -362,12 +369,15 @@ class Engine:
 
         if finish_reason is None:
             finish_reason = "length"
+        now = time.perf_counter()
         yield Step(
             token=-1,
             text="",
             prompt_tokens=len(prompt),
             generated=len(tokens),
             finish_reason=finish_reason,
+            prefill_ms=round(prefill_ms, 1),
+            decode_ms=round((now - t_prefill_done) * 1000.0, 1),
         )
 
     # -- MoE expansion observability ------------------------------------------
@@ -383,6 +393,39 @@ class Engine:
             rt.flush_log(list(range(pos_start, pos_end)))
         if rt.stats_every > 0:
             rt.maybe_print_stats()
+
+    # -- warmup ---------------------------------------------------------------
+
+    def warmup(self, prompt_len: int = 16, gen_tokens: int = 4):
+        """Short dummy generation before serving: pays the Metal kernel
+        JIT / autotune / first-trace costs up front instead of on the first
+        user request. Expansion observability is suspended."""
+        rt = self.runtime
+        if rt is not None:
+            rt.suspended = True
+        try:
+            text_args = getattr(self.loaded.model, "text_args", None)
+            vocab = getattr(text_args, "vocab_size", None) or 64
+            prompt = [i % (vocab - 1) + 1 for i in range(prompt_len)]
+            slot = self.slots[0]
+            slot.caches = self.loaded.make_cache(self.cache_type)
+            slot.tokens = []
+            out = None
+            for cs in range(0, len(prompt), self.prefill_step_size):
+                chunk = prompt[cs : cs + self.prefill_step_size]
+                out = self.model(mx.array([chunk]), cache=slot.caches)
+                slot.tokens.extend(chunk)
+                if cs + self.prefill_step_size < len(prompt):
+                    mx.eval(out)
+            for _ in range(gen_tokens):
+                out = self.model(mx.array([[prompt[-1]]]), cache=slot.caches)
+                mx.eval(out)
+            slot.caches = None
+            slot.tokens = []
+        finally:
+            if rt is not None:
+                rt.suspended = False
+                rt.reset_stats()
 
     # -- cache management ----------------------------------------------------
 

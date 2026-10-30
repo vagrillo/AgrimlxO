@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression tests for the incremental detokenizer (tokenizer.py).
+"""Regression tests for the incremental detokenizer (tokenizer.py) and the
+speed layer (mx.compile FFN + warmup).
 
 The engine's toy tokenizer stub returns empty strings, so the detokenizer
 needs its own tests with a byte-accurate fake tokenizer that mimics how

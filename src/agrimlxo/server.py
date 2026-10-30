@@ -249,12 +249,24 @@ def _make_reasoning_feed(split_enabled: bool):
     return feed
 
 
-def _usage(prompt_tokens: int, generated: int) -> dict:
-    return {
+def _usage(
+    prompt_tokens: int,
+    generated: int,
+    prefill_ms: Optional[float] = None,
+    decode_ms: Optional[float] = None,
+) -> dict:
+    usage = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": generated,
         "total_tokens": prompt_tokens + generated,
     }
+    if prefill_ms:
+        usage["prefill_ms"] = prefill_ms
+        usage["prompt_tps"] = round(prompt_tokens / (prefill_ms / 1000.0), 1)
+    if decode_ms and generated:
+        usage["decode_ms"] = decode_ms
+        usage["completion_tps"] = round(generated / (decode_ms / 1000.0), 1)
+    return usage
 
 
 def _chunk(rid, created, model, delta, finish=None):
@@ -429,7 +441,12 @@ def create_app(state: ServerState) -> FastAPI:
         finally:
             slot.release()
 
-        usage = _usage(final.prompt_tokens if final else len(tokens), final.generated if final else 0)
+        usage = _usage(
+            final.prompt_tokens if final else len(tokens),
+            final.generated if final else 0,
+            prefill_ms=final.prefill_ms if final else None,
+            decode_ms=final.decode_ms if final else None,
+        )
         state.counters["generated_tokens"] += usage["completion_tokens"]
         msg: Dict[str, Any] = {"role": "assistant", "content": content}
         if reasoning:
@@ -509,7 +526,12 @@ def create_app(state: ServerState) -> FastAPI:
                             "created": created,
                             "model": state.model_name,
                             "choices": [],
-                            "usage": _usage(final.prompt_tokens, final.generated),
+                            "usage": _usage(
+                                final.prompt_tokens,
+                                final.generated,
+                                prefill_ms=final.prefill_ms,
+                                decode_ms=final.decode_ms,
+                            ),
                         }
                     )
                 )

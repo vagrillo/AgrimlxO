@@ -185,6 +185,13 @@ def _add_serve_args(p: argparse.ArgumentParser):
                         " for large prefill batches; reorders the fp accumulation vs the"
                         " stock ops (also AGRIMLXO_FAST_MOE=1; default off)")
 
+    # ---- speed ----
+    p.add_argument("--no-compile", dest="no_compile", action="store_true", default=False,
+                   help="disable mx.compile of the pure FFN sub-calls (decode/prefill speed)")
+    p.add_argument("--no-warmup", dest="no_warmup", action="store_true", default=False,
+                   help="skip the startup warmup generation (first request then pays"
+                        " the Metal JIT/autotune costs)")
+
 
 def user_requested_moe(argv: List[str]) -> bool:
     """True when the user passed any --moe-* / --q35-* / --no-moe-expansion flag."""
