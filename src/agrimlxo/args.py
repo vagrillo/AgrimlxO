@@ -91,8 +91,8 @@ def _add_serve_args(p: argparse.ArgumentParser):
         help="total context size, split across slots (default: 32768)",
     )
     p.add_argument(
-        "--parallel", type=int, default=4,
-        help="number of server slots; the context is divided by this (default: 4)",
+        "--parallel", type=int, default=1,
+        help="number of server slots; the context is divided by this (default: 1)",
     )
     p.add_argument(
         "-b", "--batch-size", type=int, default=2048, dest="batch_size",
@@ -102,10 +102,11 @@ def _add_serve_args(p: argparse.ArgumentParser):
         "-n", "--n-predict", type=int, default=-1, dest="n_predict",
         help="max tokens to predict per request, -1 = unlimited (default: -1)",
     )
-    p.add_argument("--cache-type-k", default="f16", choices=["f32", "f16", "q8_0", "q4_0"],
-                   help="KV cache data type for the full-attention layers (default: f16)")
-    p.add_argument("--cache-type-v", default="f16", choices=["f32", "f16", "q8_0", "q4_0"],
-                   help="KV cache data type, values (default: f16)")
+    p.add_argument("--cache-type-k", default="q8_0", choices=["auto", "f32", "f16", "q8_0", "q4_0"],
+                   help="KV cache data type, keys (default: q8_0 — fast on Metal and halves"
+                        " the KV memory; 'auto' = the model's compute dtype like mlx-lm)")
+    p.add_argument("--cache-type-v", default="q8_0", choices=["auto", "f32", "f16", "q8_0", "q4_0"],
+                   help="KV cache data type, values (default: q8_0)")
     p.add_argument("--chat-template", default="", help="jinja chat template override")
     p.add_argument(
         "--jinja", action="store_true", default=False,

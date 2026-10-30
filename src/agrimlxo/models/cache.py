@@ -288,15 +288,19 @@ class ArraysCache(_BaseCache):
         return sum(c.nbytes for c in self.cache if c is not None)
 
 
-def make_cache_for_layers(layer_kinds: List[str], cache_type: str = "f16"):
+def make_cache_for_layers(layer_kinds: List[str], cache_type: str = "auto"):
     """Build the per-layer cache list for the vendored models.
 
     ``layer_kinds``: "full_attention" or "linear_attention" per layer.
-    ``cache_type``: f16 | f32 | q8_0 | q4_0 (llama.cpp-style --cache-type-k/v).
+    ``cache_type``: auto (default: native passthrough — the KV stays in the
+    model's compute dtype, exactly like mlx-lm's make_cache) | f32 | f16 |
+    q8_0 | q4_0.
     """
     dtype = None
     kv_kwargs = {}
-    if cache_type == "f32":
+    if cache_type in ("auto", "native"):
+        pass  # native dtype: no cast, fused SDPA on matching dtypes
+    elif cache_type == "f32":
         dtype = mx.float32
     elif cache_type == "f16":
         dtype = mx.float16

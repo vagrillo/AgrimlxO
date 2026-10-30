@@ -184,7 +184,7 @@ class LoadedModel:
     def layers(self):
         return self.model.layers
 
-    def make_cache(self, cache_type: str = "f16"):
+    def make_cache(self, cache_type: str = "auto"):
         return self.model.make_cache(cache_type)
 
     @property

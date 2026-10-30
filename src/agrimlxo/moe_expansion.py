@@ -411,13 +411,21 @@ class MoERuntime:
 
         ``sel_count``: [n_tokens] kept-expert counts; ``kept_ids``: [n_tokens,
         n] rank-ordered expert ids (only when the expert log is enabled).
+
+        The arrays are lazy branches of the model graph; scheduling them with
+        ``mx.async_eval`` folds their evaluation into the running pipeline
+        WITHOUT syncing it. Evaluating them later from another thread (stats
+        printing) would otherwise hit "There is no Stream(gpu, N) in current
+        thread" (they stayed bound to the async stream that never ran).
         """
         if self.suspended:
             return
+        mx.async_eval(sel_count)
         st = self._stats.setdefault(layer_idx, _LayerStats())
         st.counts.append(sel_count)
         self._pending_tokens += sel_count.shape[0]
         if self._log_fh is not None and kept_ids is not None:
+            mx.async_eval(kept_ids)
             st.last_ids = kept_ids
 
     def reset_stats(self):
@@ -547,11 +555,12 @@ class MoERuntime:
 # (block_count, expert_count, expert_count_used) -> profile, matched on the
 # GGUF/HF metadata like AgrillaMoE's launcher does.
 _PROFILES: Dict[Tuple[int, int, int], Dict] = {
-    # Qwen3.5/3.6-35B-A3B: 40 layers, 256 experts, top-8 — the profile used
-    # in the benchmarks (GPQA-Diamond: 84.34% expanded vs 81.82% stock top-8).
+    # Qwen3.5/3.6-35B-A3B: 40 layers, 256 experts, top-8 — user default
+    # (paper benchmark recipe was 20/0.80; 12/0.75 is the lighter daily-
+    # driving profile: ~1.5x routed compute instead of 2.5x).
     (40, 256, 8): {
-        "max_experts": 20,
-        "threshold": 0.80,
+        "max_experts": 12,
+        "threshold": 0.75,
         "layer_start": 25,
         "layer_end": 39,
         "name": "Qwen3.5/3.6-35B-A3B",
@@ -568,11 +577,11 @@ def default_profile_for(n_layer: int, n_expert: int, top_k: int) -> Optional[Dic
     profile = _PROFILES.get(sig)
     if profile is not None:
         return profile
-    # Generic MoE fallback: quality-leaning expansion without a layer range.
+    # Generic MoE fallback: expansion without a layer range.
     if n_expert > 0 and top_k > 0 and n_expert >= 2 * top_k:
         return {
-            "max_experts": 20,
-            "threshold": 0.80,
+            "max_experts": 12,
+            "threshold": 0.75,
             "name": "generic MoE",
         }
     return None

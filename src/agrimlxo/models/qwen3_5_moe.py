@@ -506,7 +506,7 @@ class TextModel(nn.Module):
     def layers(self):
         return self.model.layers
 
-    def make_cache(self, cache_type: str = "f16"):
+    def make_cache(self, cache_type: str = "auto"):
         from .cache import make_cache_for_layers
 
         kinds = [
@@ -598,7 +598,7 @@ class Model(nn.Module):
     def layers(self):
         return self.language_model.model.layers
 
-    def make_cache(self, cache_type: str = "f16"):
+    def make_cache(self, cache_type: str = "auto"):
         return self.language_model.make_cache(cache_type)
 
     def sanitize(self, weights):

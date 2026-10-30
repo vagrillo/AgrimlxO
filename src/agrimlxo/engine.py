@@ -46,6 +46,9 @@ class GenParams:
     stop: List[str] = field(default_factory=list)
     ignore_eos: bool = False
     reasoning_budget: int = 0  # 0 = unlimited
+    # yield an initial Step (token=-2) carrying the prefill timing before the
+    # first generated token — used by the streaming API for live stats
+    emit_prefill_stats: bool = False
 
     @property
     def greedy(self) -> bool:
@@ -159,7 +162,7 @@ class Engine:
         ctx_size: int,
         prefill_step_size: int = 2048,
         parallel: int = 1,
-        cache_type: str = "f16",
+        cache_type: str = "auto",
         wrapup_text: str = _DEFAULT_WRAPUP,
     ):
         self.loaded = loaded
@@ -290,6 +293,16 @@ class Engine:
             logits = forward_chunked(prompt)
         t_prefill_done = time.perf_counter()
         prefill_ms = (t_prefill_done - t_start) * 1000.0
+
+        if params.emit_prefill_stats:
+            yield Step(
+                token=-2,  # prefill-stats marker (not a generated token)
+                text="",
+                prompt_tokens=len(prompt),
+                generated=0,
+                finish_reason=None,
+                prefill_ms=round(prefill_ms, 1),
+            )
 
         try:
             # ---- decode pipeline (mlx-lm style): queue the NEXT model step

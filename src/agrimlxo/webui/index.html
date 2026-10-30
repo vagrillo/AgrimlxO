@@ -1,14 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="it">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgrimlxO</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <style>
-.math-raw { font-family: var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
-.katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
 :root {
   --bg: #18181b; --bg2: #1f1f23; --bg3: #27272a; --border: #3f3f46;
   --text: #e4e4e7; --text2: #a1a1aa; --accent: #f97316; --accent2: #fb923c;
@@ -26,7 +25,7 @@ body {
   background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
 }
 header {
-  display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   border-bottom: 1px solid var(--border); background: var(--bg2); flex: none;
 }
 header .logo { font-weight: 700; letter-spacing: .5px; }
@@ -40,16 +39,19 @@ header .logo span { color: var(--accent); }
 header .spacer { flex: 1; }
 button.icon {
   background: none; border: 1px solid var(--border); color: var(--text2);
-  border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px;
+  border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 14px;
 }
 button.icon:hover { color: var(--text); border-color: var(--text2); }
+button.icon.active { color: var(--accent2); border-color: var(--accent); }
 
 .main { display: flex; flex: 1; min-height: 0; }
 aside {
-  width: 300px; flex: none; border-right: 1px solid var(--border); background: var(--bg2);
-  overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px;
+  background: var(--bg2); overflow-y: auto; padding: 14px; flex: none;
+  display: flex; flex-direction: column; gap: 12px;
 }
 aside.hidden { display: none; }
+#history { width: 260px; border-right: 1px solid var(--border); }
+#settings { width: 300px; border-left: 1px solid var(--border); }
 aside h3 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; color: var(--text2); letter-spacing: .5px; }
 .setting { font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
 .setting .row { display: flex; justify-content: space-between; align-items: center; }
@@ -62,15 +64,34 @@ textarea, select, input[type=text], input[type=number] {
 textarea { resize: vertical; min-height: 64px; }
 .switch { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
 .switch input { accent-color: var(--accent); }
-#newchat {
+.panel-btn {
   background: var(--accent); color: #fff; border: none; border-radius: 8px;
   padding: 9px; font-size: 13px; font-weight: 600; cursor: pointer;
 }
-#newchat:hover { background: var(--accent2); }
+.panel-btn:hover { background: var(--accent2); }
+.panel-btn.ghost { background: var(--bg3); color: var(--text); border: 1px solid var(--border); font-weight: 400; }
 .moeinfo { font-size: 12px; color: var(--text2); background: var(--bg3); border-radius: 8px; padding: 8px 10px; line-height: 1.5; }
 .moeinfo b { color: var(--accent2); }
 
-#chat { flex: 1; overflow-y: auto; padding: 24px 16px 120px; scroll-behavior: smooth; }
+/* history list */
+#chatlist { display: flex; flex-direction: column; gap: 4px; }
+.chat-item {
+  display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px;
+  cursor: pointer; font-size: 13px; border: 1px solid transparent;
+}
+.chat-item:hover { background: var(--bg3); }
+.chat-item.active { background: var(--bg3); border-color: var(--accent); }
+.chat-item .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-item .d { font-size: 10px; color: var(--text2); font-family: var(--mono); }
+.chat-item .del {
+  background: none; border: none; color: var(--text2); cursor: pointer; font-size: 13px;
+  padding: 0 2px; border-radius: 4px; visibility: hidden;
+}
+.chat-item:hover .del { visibility: visible; }
+.chat-item .del:hover { color: #dc2626; }
+.hist-hint { font-size: 12px; color: var(--text2); line-height: 1.5; }
+
+#chat { flex: 1; overflow-y: auto; padding: 24px 16px 130px; scroll-behavior: smooth; }
 .convo { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
 .msg { display: flex; flex-direction: column; gap: 6px; }
 .msg .who { font-size: 11px; font-weight: 700; letter-spacing: .5px; color: var(--text2); text-transform: uppercase; }
@@ -81,6 +102,12 @@ textarea { resize: vertical; min-height: 64px; }
 }
 .msg.assistant { align-self: stretch; }
 .msg.assistant .bubble { padding: 2px 0; }
+.atts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.atts img { max-height: 96px; border-radius: 8px; border: 1px solid var(--border); }
+.atts .chip {
+  font-size: 11px; font-family: var(--mono); color: var(--text2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; background: var(--bg3);
+}
 .reasoning {
   border-left: 3px solid var(--border); color: var(--reasoning);
   font-size: 13px; padding: 4px 10px; margin: 4px 0; white-space: pre-wrap;
@@ -98,46 +125,78 @@ textarea { resize: vertical; min-height: 64px; }
 .bubble table { border-collapse: collapse; margin: .5em 0; }
 .bubble td, .bubble th { border: 1px solid var(--border); padding: 4px 8px; font-size: 13px; }
 .bubble blockquote { border-left: 3px solid var(--accent); margin: .4em 0; padding-left: 10px; color: var(--text2); }
+.math-raw { font-family: var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
 .meta { font-size: 11px; color: var(--text2); font-family: var(--mono); }
+.meta.live { color: var(--accent2); }
+.meta.live::before { content: "⏱ "; }
 .cursor { display: inline-block; width: 8px; height: 15px; background: var(--accent);
   animation: blink 1s steps(1) infinite; vertical-align: text-bottom; }
 @keyframes blink { 50% { opacity: 0; } }
 
 #composer {
-  position: fixed; bottom: 0; left: 0; right: 0; padding: 12px 16px 14px;
+  position: fixed; bottom: 0; left: 0; right: 0; padding: 10px 16px 12px;
   background: linear-gradient(transparent, var(--bg) 30%);
 }
 .composer-box {
   max-width: 780px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 10px;
 }
+#attachstrip { max-width: 780px; margin: 0 auto 6px; display: none; flex-wrap: wrap; gap: 6px; }
+#attachstrip.show { display: flex; }
+.att-preview { position: relative; }
+.att-preview img { max-height: 64px; border-radius: 8px; border: 1px solid var(--border); }
+.att-preview .chip {
+  font-size: 11px; font-family: var(--mono); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 8px; background: var(--bg3); display: inline-block;
+}
+.att-preview .rm {
+  position: absolute; top: -6px; right: -6px; background: #dc2626; color: #fff;
+  border: none; border-radius: 50%; width: 18px; height: 18px; cursor: pointer; font-size: 11px; line-height: 1;
+}
 #input {
   flex: 1; border: none; background: transparent; color: var(--text);
   font-size: 14px; resize: none; max-height: 180px; outline: none; font-family: inherit; line-height: 1.45;
 }
-#send {
-  background: var(--accent); border: none; color: #fff; border-radius: 10px;
-  padding: 8px 16px; font-weight: 700; cursor: pointer; font-size: 13px; flex: none;
+#send, #attach {
+  border: none; border-radius: 10px; padding: 8px 14px; font-weight: 700;
+  cursor: pointer; font-size: 13px; flex: none;
 }
+#send { background: var(--accent); color: #fff; }
 #send:disabled { opacity: .4; cursor: default; }
 #send.stop { background: #dc2626; }
+#attach { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); font-weight: 400; }
 .hint { text-align: center; font-size: 11px; color: var(--text2); margin-top: 6px; }
 </style>
 </head>
 <body>
 <header>
+  <button class="icon" id="histbtn" title="cronologia chat">🕘</button>
   <div id="dot" title="server"></div>
   <div class="logo">Agriml<span>xO</span></div>
   <span class="badge" id="modelbadge">loading…</span>
   <span class="badge on" id="moebadge" style="display:none">MoE expansion</span>
   <div class="spacer"></div>
-  <button class="icon" id="themeswitch" title="toggle theme">◐</button>
-  <button class="icon" id="sidebtn" title="settings">☰</button>
+  <button class="icon" id="themeswitch" title="tema">◐</button>
+  <button class="icon" id="setbtn" title="impostazioni">⚙</button>
 </header>
 
 <div class="main">
-  <aside id="sidebar">
-    <button id="newchat">＋ New chat</button>
+  <aside id="history" class="hidden">
+    <button class="panel-btn" id="newchat">＋ Nuova chat</button>
+    <h3>Cronologia (sul client)</h3>
+    <div id="chatlist"></div>
+    <div class="hist-hint" id="histhint" style="display:none">
+      Nessuna chat salvata. Le conversazioni restano in questo browser (localStorage):
+      clic su una voce per riprendere dove eri.
+    </div>
+  </aside>
+
+  <div id="chat">
+    <div class="convo" id="convo"></div>
+  </div>
+
+  <aside id="settings" class="hidden">
     <h3>System prompt</h3>
     <textarea id="sysprompt" placeholder="You are a helpful assistant."></textarea>
     <h3>Sampling</h3>
@@ -160,31 +219,30 @@ textarea { resize: vertical; min-height: 64px; }
     <h3>Server</h3>
     <div class="moeinfo" id="moeinfo">…</div>
   </aside>
-
-  <div id="chat">
-    <div class="convo" id="convo"></div>
-  </div>
 </div>
 
 <div id="composer">
+  <div id="attachstrip"></div>
   <div class="composer-box">
-    <textarea id="input" rows="1" placeholder="Send a message… (Enter to send, Shift+Enter for newline)"></textarea>
-    <button id="send">Send</button>
+    <button id="attach" title="allega immagini, PDF o testo">📎</button>
+    <input type="file" id="fileinput" multiple style="display:none"
+           accept="image/png,image/jpeg,image/webp,application/pdf,.txt,.md,.csv,.json,.py,.js,.html,.xml,.log">
+    <textarea id="input" rows="1" placeholder="Scrivi un messaggio… (Invio per inviare, Maiusc+Invio per andare a capo)"></textarea>
+    <button id="send">Invia</button>
   </div>
   <div class="hint" id="hint"></div>
 </div>
 
 <script>
 "use strict";
-// ---------- mini markdown renderer (offline, math via KaTeX when loaded) ----------
+// ---------- mini markdown renderer (math via KaTeX when loaded) ----------
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
 function renderMath(tex, display){
   if (window.katex && window.katex.renderToString) {
     try { return window.katex.renderToString(tex, {throwOnError:false, displayMode:display}); }
     catch(e) {}
   }
-  const t = display ? `<div class="math-raw">${esc(tex)}</div>` : `<span class="math-raw">${esc(tex)}</span>`;
-  return t;
+  return display ? `<div class="math-raw">${esc(tex)}</div>` : `<span class="math-raw">${esc(tex)}</span>`;
 }
 function renderMD(src){
   const blocks = [];
@@ -218,12 +276,16 @@ function renderMD(src){
 
 // ---------- state ----------
 const $ = id => document.getElementById(id);
-let history = [];       // {role, content, reasoning}
+let history = [];       // current chat: {role, content, reasoning, attachments?}
+let chats = [];         // all saved chats: {id, title, updated, messages}
+let currentChatId = null;
+let attachments = [];   // pending attachments: {kind:'image'|'doc', name, dataUrl?, text?}
 let generating = false;
 let abort = null;
 let props = null;
 let t0 = 0, tgen = 0, tprompt = 0;
-let usageInfo = null;   // {prompt_tps, completion_tps, prefill_ms} from the server
+let usageInfo = null;
+let liveEl = null, nLiveTok = 0, tFirstTok = 0, livePrefillTps = null;
 
 const settings = {};
 const sids = [["temp","temp"],["topk","top_k"],["topp","top_p"],["minp","min_p"],["rep","repeat_penalty"],["maxt","n_predict"],["rb","reasoning_budget"]];
@@ -231,12 +293,10 @@ function loadSettings(){
   try { Object.assign(settings, JSON.parse(localStorage.getItem("agrimlxo.settings")||"{}")); } catch(e){}
 }
 function saveSettings(){ localStorage.setItem("agrimlxo.settings", JSON.stringify(settings)); }
-
-function bindSlider(id, key, fmt){
+function bindSlider(id, key){
   const el = $(id), v = $(id+"-v");
-  const upd = () => { v.textContent = fmt ? fmt(el.value) : el.value; settings[key] = parseFloat(el.value); saveSettings(); };
+  const upd = () => { v.textContent = el.value; settings[key] = parseFloat(el.value); saveSettings(); };
   el.addEventListener("input", upd);
-  return upd;
 }
 
 async function fetchProps(){
@@ -247,34 +307,46 @@ async function fetchProps(){
     const moe = props.moe_expansion || {};
     if (moe.expansion_active) {
       $("moebadge").style.display = "";
-      $("moeinfo").innerHTML = `<b>MoE expansion</b> active<br>` +
-        `budget: <b>${moe.experts_per_token_max}</b> experts/token (native top-${moe.native_top_k})` +
-        (moe.layer_range ? `<br>layers ${moe.layer_range[0]}..${moe.layer_range[1]}` : "");
+      $("moeinfo").innerHTML = `<b>MoE expansion</b> attiva<br>` +
+        `budget: <b>${moe.experts_per_token_max}</b> esperti/token (top-${moe.native_top_k} nativo)` +
+        (moe.layer_range ? `<br>layer ${moe.layer_range[0]}..${moe.layer_range[1]}` : "");
     } else {
       $("moebadge").style.display = "none";
-      $("moeinfo").innerHTML = `MoE expansion <b>off</b> (stock top-${moe.native_top_k} routing)`;
+      $("moeinfo").innerHTML = `MoE expansion <b>off</b> (routing stock top-${moe.native_top_k})`;
     }
     const d = props.default_generation_settings || {};
     const defaults = {temp: d.temperature, top_k: d.top_k, top_p: d.top_p, min_p: d.min_p, n_predict: d.n_predict, reasoning_budget: 0};
     for (const [id, key] of sids) {
       const el = $(id);
       if (!(key in settings) || settings[key] === undefined || settings[key] === null) settings[key] = defaults[key];
-      if (el.type === "range") {
-        el.value = Math.min(Math.max(settings[key], +el.min), +el.max);
-      } else el.value = settings[key];
-      $(id+"-v").textContent = el.type === "range" ? el.value : el.value;
+      if (el.type === "range") el.value = Math.min(Math.max(settings[key], +el.min), +el.max);
+      else el.value = settings[key];
+      $(id+"-v").textContent = el.value;
     }
     saveSettings();
   } catch(e) { $("dot").style.background = "#dc2626"; $("modelbadge").textContent = "offline"; }
 }
 
 // ---------- chat rendering ----------
-function addMsg(role){
+function addMsg(role, atts){
   const div = document.createElement("div");
   div.className = "msg " + role;
   const who = document.createElement("div"); who.className = "who";
-  who.textContent = role === "user" ? "You" : "Assistant";
+  who.textContent = role === "user" ? "Tu" : "Assistant";
   div.appendChild(who);
+  if (atts && atts.length) {
+    const a = document.createElement("div"); a.className = "atts";
+    for (const at of atts) {
+      if (at.kind === "image" && at.dataUrl) {
+        const img = document.createElement("img"); img.src = at.dataUrl; a.appendChild(img);
+      } else {
+        const c = document.createElement("span"); c.className = "chip";
+        c.textContent = (at.kind === "doc" ? "📄 " : "") + at.name;
+        a.appendChild(c);
+      }
+    }
+    div.appendChild(a);
+  }
   const bubble = document.createElement("div"); bubble.className = "bubble";
   div.appendChild(bubble);
   $("convo").appendChild(div);
@@ -285,20 +357,138 @@ function addMsg(role){
 function addReasoning(msg){
   const r = document.createElement("div");
   r.className = "reasoning";
-  r.innerHTML = `<div class="lbl">💭 thinking</div><div class="body" style="margin:0"></div>`;
+  r.innerHTML = `<div class="lbl">💭 pensiero</div><div class="body" style="margin:0"></div>`;
   r.onclick = () => r.classList.toggle("collapsed");
   msg.div.insertBefore(r, msg.bubble);
   return r.querySelector(".body");
 }
 
-const metaEls = new WeakMap();
-function addMeta(msg){
-  const m = document.createElement("div"); m.className = "meta";
-  msg.div.appendChild(m);
-  return m;
+function scrollBottom(){ const c = $("chat"); c.scrollTop = c.scrollHeight; }
+
+// ---------- attachments ----------
+$("attach").addEventListener("click", () => $("fileinput").click());
+$("fileinput").addEventListener("change", async e => {
+  for (const f of e.target.files) await addAttachment(f);
+  e.target.value = "";
+  renderAttachStrip();
+});
+async function addAttachment(f){
+  if (/^image\//.test(f.type)) {
+    const dataUrl = await new Promise((res, rej) => {
+      const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej;
+      r.readAsDataURL(f);
+    });
+    attachments.push({kind: "image", name: f.name, dataUrl});
+    return;
+  }
+  if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) {
+    const text = await extractPdfText(f);
+    attachments.push({kind: "doc", name: f.name, text});
+    return;
+  }
+  const text = await f.text();
+  attachments.push({kind: "doc", name: f.name, text});
+}
+async function extractPdfText(file){
+  if (!window.pdfjsLib) throw new Error("pdf.js non caricato (serve connessione al CDN)");
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  let out = "";
+  const maxPages = Math.min(pdf.numPages, 60);
+  for (let p = 1; p <= maxPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    out += content.items.map(i => i.str).join(" ") + "\n\n";
+  }
+  out = out.slice(0, 80000);  // keep the context bounded
+  return out || "(PDF senza testo estraibile)";
+}
+function renderAttachStrip(){
+  const s = $("attachstrip");
+  s.innerHTML = "";
+  s.className = attachments.length ? "show" : "";
+  attachments.forEach((at, i) => {
+    const d = document.createElement("div"); d.className = "att-preview";
+    if (at.kind === "image") {
+      const img = document.createElement("img"); img.src = at.dataUrl; d.appendChild(img);
+    } else {
+      const c = document.createElement("span"); c.className = "chip";
+      c.textContent = "📄 " + at.name + (at.text ? ` (${Math.ceil(at.text.length/1000)}k)` : "");
+      d.appendChild(c);
+    }
+    const rm = document.createElement("button"); rm.className = "rm"; rm.textContent = "×";
+    rm.onclick = () => { attachments.splice(i, 1); renderAttachStrip(); };
+    d.appendChild(rm);
+    s.appendChild(d);
+  });
 }
 
-function scrollBottom(){ const c = $("chat"); c.scrollTop = c.scrollHeight; }
+// ---------- chat history (client-side) ----------
+const LS_CHATS = "agrimlxo.chats.v1";
+function loadChats(){
+  try { chats = JSON.parse(localStorage.getItem(LS_CHATS) || "[]"); } catch(e) { chats = []; }
+  if (!Array.isArray(chats)) chats = [];
+}
+function saveChats(){ localStorage.setItem(LS_CHATS, JSON.stringify(chats.slice(0, 50))); }
+function saveCurrentChat(){
+  if (!history.length) return;
+  if (currentChatId === null) currentChatId = "c" + Date.now();
+  const firstUser = history.find(m => m.role === "user");
+  const title = (firstUser ? firstUser.content : "chat").replace(/\s+/g, " ").slice(0, 48) || "chat";
+  const existing = chats.find(c => c.id === currentChatId);
+  const entry = {id: currentChatId, title, updated: Date.now(),
+                 messages: history.map(m => ({...m}))};
+  if (existing) Object.assign(existing, entry);
+  else chats.unshift(entry);
+  chats.sort((a, b) => b.updated - a.updated);
+  saveChats();
+  renderHistory();
+}
+function renderHistory(){
+  const list = $("chatlist");
+  list.innerHTML = "";
+  $("histhint").style.display = chats.length ? "none" : "";
+  for (const c of chats) {
+    const item = document.createElement("div");
+    item.className = "chat-item" + (c.id === currentChatId ? " active" : "");
+    const t = document.createElement("span"); t.className = "t"; t.textContent = c.title;
+    const d = document.createElement("span"); d.className = "d";
+    d.textContent = new Date(c.updated).toLocaleDateString();
+    const del = document.createElement("button"); del.className = "del"; del.textContent = "🗑";
+    del.title = "elimina";
+    del.onclick = e => {
+      e.stopPropagation();
+      chats = chats.filter(x => x.id !== c.id);
+      if (currentChatId === c.id) newChat();
+      saveChats(); renderHistory();
+    };
+    item.append(t, d, del);
+    item.onclick = () => resumeChat(c.id);
+    list.appendChild(item);
+  }
+}
+function resumeChat(id){
+  if (generating) stopGen();
+  const c = chats.find(x => x.id === id);
+  if (!c) return;
+  currentChatId = id;
+  history = c.messages.map(m => ({...m}));
+  $("convo").innerHTML = "";
+  for (const m of history) {
+    const msg = addMsg(m.role, m.attachments);
+    msg.bubble.innerHTML = m.role === "user" ? esc(m.content) : renderMD(m.content);
+    if (m.reasoning) { const b = addReasoning(msg); b.textContent = m.reasoning; }
+  }
+  renderHistory();
+  scrollBottom();
+}
+function newChat(){
+  history = []; currentChatId = null;
+  $("convo").innerHTML = "";
+  renderHistory();
+}
 
 // ---------- generation ----------
 function buildMessages(){
@@ -306,7 +496,8 @@ function buildMessages(){
   const sys = $("sysprompt").value.trim();
   if (sys) msgs.push({role: "system", content: sys});
   for (const m of history) {
-    if (m.role === "assistant" && m.reasoning) msgs.push({role: "assistant", content: m.content, reasoning_content: m.reasoning});
+    if (m.role === "assistant" && m.reasoning)
+      msgs.push({role: "assistant", content: m.content, reasoning_content: m.reasoning});
     else msgs.push({role: m.role, content: m.content});
   }
   return msgs;
@@ -314,28 +505,56 @@ function buildMessages(){
 
 async function send(){
   if (generating) { stopGen(); return; }
-  const text = $("input").value.trim();
-  if (!text) return;
+  const raw = $("input").value.trim();
+  if (!raw && !attachments.length) return;
+
+  // attachments: docs fold into the text; images go as OpenAI image parts
+  let text = raw;
+  const imageAtts = attachments.filter(a => a.kind === "image");
+  const docAtts = attachments.filter(a => a.kind === "doc");
+  for (const d of docAtts) {
+    text = `[Allegato: ${d.name}]\n\`\`\`\n${d.text}\n\`\`\`\n\n` + text;
+  }
+  const storedAtts = attachments.map(a => a.kind === "image"
+    ? {kind: "image", name: a.name, dataUrl: a.dataUrl}
+    : {kind: "doc", name: a.name});
+
+  let userEntry = {role: "user", content: text, attachments: storedAtts.length ? storedAtts : undefined};
+  const apiContent = [];
+  if (text) apiContent.push({type: "text", text});
+  for (const img of imageAtts) {
+    apiContent.push({type: "image_url", image_url: {url: img.dataUrl}});
+  }
+
   $("input").value = ""; $("input").style.height = "auto";
-  history.push({role: "user", content: text});
-  const um = addMsg("user");
-  um.bubble.textContent = text;
+  attachments = []; renderAttachStrip();
+
+  history.push(userEntry);
+  const um = addMsg("user", storedAtts);
+  um.bubble.textContent = text || "(allegati)";
 
   const msg = addMsg("assistant");
   const cursor = document.createElement("span"); cursor.className = "cursor";
+  liveEl = document.createElement("div"); liveEl.className = "meta live";
+  msg.div.appendChild(liveEl);
   let body = null, contentHTML = "", contentRaw = "", reasoningRaw = "";
-  let meta = null;
   generating = true; setSend();
   const ctrl = new AbortController(); abort = ctrl;
   t0 = performance.now(); tgen = 0; tprompt = 0; usageInfo = null;
+  nLiveTok = 0; tFirstTok = 0; livePrefillTps = null;
 
   try {
+    const msgs = buildMessages();
+    msgs.push({
+      role: "user",
+      content: apiContent.length > 1 ? apiContent : (apiContent[0] ? apiContent[0].text : ""),
+    });
     const res = await fetch("/v1/chat/completions", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       signal: ctrl.signal,
       body: JSON.stringify({
-        messages: buildMessages(),
+        messages: msgs,
         stream: true,
         stream_options: {include_usage: true},
         temperature: settings.temp, top_k: settings.top_k, top_p: settings.top_p,
@@ -345,7 +564,11 @@ async function send(){
         chat_template_kwargs: {enable_thinking: $("think").checked},
       }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      let detail = await res.text();
+      try { detail = JSON.parse(detail).detail || detail; } catch(e) {}
+      throw new Error(detail);
+    }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -359,46 +582,59 @@ async function send(){
         const data = part.slice(6);
         if (data === "[DONE]") continue;
         let j; try { j = JSON.parse(data); } catch(e) { continue; }
-        if (j.usage) {
-          tprompt = j.usage.prompt_tokens; tgen = j.usage.completion_tokens;
-          usageInfo = j.usage;
+        if (j.usage) { tprompt = j.usage.prompt_tokens; tgen = j.usage.completion_tokens; usageInfo = j.usage; }
+        if (j.usage_partial) {
+          tprompt = j.usage_partial.prompt_tokens;
+          livePrefillTps = j.usage_partial.prompt_tps;
         }
         const d = j.choices && j.choices[0] && j.choices[0].delta;
-        if (!d) { if (j.choices && j.choices[0] && j.choices[0].finish_reason) renderMeta(msg); continue; }
+        if (!d) { updateLiveStats(); continue; }
+        if (d.reasoning_content || d.content) {
+          if (!tFirstTok) tFirstTok = performance.now();
+          nLiveTok++;
+        }
         if (d.reasoning_content) {
           if (!body) body = addReasoning(msg);
           reasoningRaw += d.reasoning_content;
           body.textContent = reasoningRaw;
-          scrollBottom();
         }
         if (d.content) {
           contentRaw += d.content;
           contentHTML = renderMD(contentRaw);
           msg.bubble.innerHTML = contentHTML + ' <span class="cursor"></span>';
-          scrollBottom();
         }
+        updateLiveStats();
+        scrollBottom();
       }
     }
     msg.bubble.innerHTML = contentHTML;
-    if (reasoningRaw && body) { body.textContent = reasoningRaw; }
-    history.push({role: "assistant", content: contentRaw, reasoning: reasoningRaw});
+    if (reasoningRaw && body) body.textContent = reasoningRaw;
+    const assistantEntry = {role: "assistant", content: contentRaw};
+    if (reasoningRaw) assistantEntry.reasoning = reasoningRaw;
+    history.push(assistantEntry);
+    saveCurrentChat();
     renderMeta(msg);
   } catch(e) {
     if (e.name !== "AbortError") {
-      msg.bubble.innerHTML = `<span style="color:#dc2626">⚠ ${esc(String(e))}</span>`;
+      msg.bubble.innerHTML = `<span style="color:#dc2626">⚠ ${esc(String(e.message || e))}</span>`;
     } else {
-      msg.bubble.innerHTML = contentHTML + ' <span class="meta">[stopped]</span>';
-      if (contentRaw) history.push({role: "assistant", content: contentRaw, reasoning: reasoningRaw});
+      msg.bubble.innerHTML = contentHTML + ' <span class="meta">[interrotto]</span>';
+      if (contentRaw) {
+        const assistantEntry = {role: "assistant", content: contentRaw};
+        if (reasoningRaw) assistantEntry.reasoning = reasoningRaw;
+        history.push(assistantEntry);
+        saveCurrentChat();
+      }
     }
   } finally {
     generating = false; abort = null; setSend();
     document.querySelectorAll(".cursor").forEach(c => c.remove());
+    liveEl = null; nLiveTok = 0; tFirstTok = 0; livePrefillTps = null;
   }
 }
 
 function renderMeta(msg){
   const dt = (performance.now() - t0) / 1000;
-  const m = document.createElement("div"); m.className = "meta";
   let line;
   if (usageInfo && usageInfo.prompt_tps) {
     line = `prefill ${tprompt} tok in ${(usageInfo.prefill_ms/1000).toFixed(1)}s`
@@ -408,54 +644,60 @@ function renderMeta(msg){
     const tps = tgen > 0 && dt > 0 ? (tgen / dt).toFixed(1) : "0";
     line = `prompt ${tprompt} tok · ${tgen} tok · ${tps} tok/s`;
   }
+  let m = msg.div.querySelector(".meta.live");
+  if (!m) { m = document.createElement("div"); m.className = "meta"; msg.div.appendChild(m); }
+  m.className = "meta";
   m.textContent = line;
-  msg.div.appendChild(m);
+}
+
+function updateLiveStats(){
+  if (!liveEl) return;
+  const now = performance.now();
+  let dec = "…";
+  if (tFirstTok && nLiveTok > 1) dec = (nLiveTok / ((now - tFirstTok) / 1000)).toFixed(1);
+  const pre = livePrefillTps !== null ? livePrefillTps + " tok/s" : "…";
+  liveEl.textContent = `prefill ${pre} · decode ${dec} tok/s`;
 }
 
 function stopGen(){ if (abort) abort.abort(); }
 function setSend(){
   const b = $("send");
   if (generating) { b.textContent = "Stop"; b.classList.add("stop"); }
-  else { b.textContent = "Send"; b.classList.remove("stop"); }
+  else { b.textContent = "Invia"; b.classList.remove("stop"); }
 }
 
 // ---------- wiring ----------
+loadChats();
 loadSettings();
 $("send").addEventListener("click", send);
+$("newchat").addEventListener("click", () => { if (generating) stopGen(); newChat(); });
 $("input").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 $("input").addEventListener("input", function(){
   this.style.height = "auto"; this.style.height = Math.min(this.scrollHeight, 180) + "px";
 });
-$("newchat").addEventListener("click", () => {
-  history = []; $("convo").innerHTML = ""; localStorage.removeItem("agrimlxo.chat");
+$("histbtn").addEventListener("click", () => {
+  $("history").classList.toggle("hidden");
+  $("histbtn").classList.toggle("active");
 });
-$("sidebtn").addEventListener("click", () => $("sidebar").classList.toggle("hidden"));
+$("setbtn").addEventListener("click", () => {
+  $("settings").classList.toggle("hidden");
+  $("setbtn").classList.toggle("active");
+});
 $("themeswitch").addEventListener("click", () => {
   document.documentElement.classList.toggle("light");
   localStorage.setItem("agrimlxo.theme", document.documentElement.classList.contains("light") ? "light" : "dark");
 });
 if (localStorage.getItem("agrimlxo.theme") === "light") document.documentElement.classList.add("light");
-const sliderUpds = sids.map(([id, key]) => bindSlider(id, key));
-$("sysprompt").addEventListener("input", e => { localStorage.setItem("agrimlxo.sysprompt", e.target.value); });
-$("think").addEventListener("change", e => { localStorage.setItem("agrimlxo.think", e.target.checked ? "1" : "0"); });
+for (const [id, key] of sids) bindSlider(id, key);
+$("sysprompt").addEventListener("input", e => localStorage.setItem("agrimlxo.sysprompt", e.target.value));
+$("think").addEventListener("change", e => localStorage.setItem("agrimlxo.think", e.target.checked ? "1" : "0"));
 $("sysprompt").value = localStorage.getItem("agrimlxo.sysprompt") || "";
 $("think").checked = localStorage.getItem("agrimlxo.think") !== "0";
-try {
-  const saved = JSON.parse(localStorage.getItem("agrimlxo.chat") || "null");
-  if (Array.isArray(saved) && saved.length) {
-    history = saved;
-    for (const m of history) {
-      const msg = addMsg(m.role);
-      msg.bubble.innerHTML = m.role === "user" ? esc(m.content) : renderMD(m.content);
-      if (m.reasoning) { const b = addReasoning(msg); b.textContent = m.reasoning; }
-    }
-  }
-} catch(e) {}
-setInterval(() => {
-  if (!generating) localStorage.setItem("agrimlxo.chat", JSON.stringify(history));
-}, 3000);
+// restore the most recent chat, if any
+if (chats.length) resumeChat(chats[0].id);
+else renderHistory();
 fetchProps();
 </script>
 </body>

@@ -294,17 +294,17 @@ def test_validation_fail_fast():
 def test_banner_lines_match_llama_cpp_format():
     rt = MoERuntime(
         40, True,
-        MoEExpansionConfig(max_experts=20, threshold=0.8, decay_end=0.5, layer_start=25, layer_end=39),
+        MoEExpansionConfig(max_experts=12, threshold=0.75, decay_end=0.5, layer_start=25, layer_end=39),
     )
     rt.setup(True, 8, 256)
     lines = rt.banner_lines()
     assert any(
-        l.startswith("moe: routed experts per token: 20 (model default 8; ranks 9..20")
+        l.startswith("moe: routed experts per token: 12 (model default 8; ranks 9..12")
         and "0.99..0.5" in l
         for l in lines
     ), lines
     assert any(
-        "p(rank 10)" in l and "0.8" in l and "experts 5..20" in l for l in lines
+        "p(rank 6)" in l and "0.75" in l and "experts 3..12" in l for l in lines
     ), lines
     assert any(
         "expansion active on layers 25..39 of 40" in l for l in lines
@@ -312,11 +312,11 @@ def test_banner_lines_match_llama_cpp_format():
 
 
 def test_default_profiles():
-    p = default_profile_for(40, 256, 8)  # Qwen3.6-35B-A3B
-    assert p["max_experts"] == 20 and p["threshold"] == 0.80
+    p = default_profile_for(40, 256, 8)  # Qwen3.5/3.6-35B-A3B
+    assert p["max_experts"] == 12 and p["threshold"] == 0.75
     assert p["layer_start"] == 25 and p["layer_end"] == 39
     g = default_profile_for(48, 128, 8)  # generic MoE fallback
-    assert g["max_experts"] == 20 and "layer_start" not in g
+    assert g["max_experts"] == 12 and "layer_start" not in g
     assert default_profile_for(12, 4, 4) is None  # too small to expand
 
 

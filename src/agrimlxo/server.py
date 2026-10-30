@@ -148,13 +148,38 @@ class ServerState:
                 if getattr(req, "reasoning_budget", None) is not None
                 else a.reasoning_budget
             ),
+            emit_prefill_stats=bool(getattr(req, "stream", False)),
         )
 
     def prompt_tokens_for_chat(self, messages: List[dict], template_kwargs: dict) -> List[int]:
         kwargs = dict(template_kwargs or {})
         if kwargs.get("enable_thinking") is None:
             kwargs.pop("enable_thinking", None)
-        return self.tokenizer.apply_chat_template(messages, **kwargs)
+        # multimodal content parts (OpenAI style): flatten to text; images are
+        # accepted at the API but the engine is text-only until the vision
+        # tower ships — fail with a clear message instead of a template error
+        flat = []
+        n_images = 0
+        for m in messages:
+            c = m.get("content")
+            if isinstance(c, list):
+                texts = []
+                for part in c:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        texts.append(str(part.get("text", "")))
+                    elif isinstance(part, dict) and part.get("type") == "image_url":
+                        n_images += 1
+                m = dict(m)
+                m["content"] = "\n".join(t for t in texts if t)
+            flat.append(m)
+        if n_images:
+            raise HTTPException(
+                400,
+                f"{n_images} image(s) received but this build is text-only:"
+                " the Qwen3.5 vision tower is not wired into the engine yet"
+                " (planned next). Text attachments work today.",
+            )
+        return self.tokenizer.apply_chat_template(flat, **kwargs)
 
     def slot_acquire(self) -> "SlotHandle":
         for i, s in enumerate(self.active_slots):
@@ -505,6 +530,29 @@ def create_app(state: ServerState) -> FastAPI:
                 if is_final:
                     final = step
                     break
+                if step.token == -2:
+                    # prefill stats, before the first token: exact server numbers
+                    yield _sse(
+                        json.dumps(
+                            {
+                                "id": rid,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": state.model_name,
+                                "choices": [],
+                                "usage_partial": {
+                                    "prompt_tokens": step.prompt_tokens,
+                                    "prefill_ms": step.prefill_ms,
+                                    "prompt_tps": round(
+                                        step.prompt_tokens
+                                        / max(1e-6, (step.prefill_ms or 1) / 1000.0),
+                                        1,
+                                    ),
+                                },
+                            }
+                        )
+                    )
+                    continue
                 c, r = feed(step.text)
                 if r:
                     yield _sse(

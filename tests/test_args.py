@@ -45,11 +45,11 @@ def test_flag_parsing_and_aliases():
         "-c", "131072", "--parallel", "4",
     ])
     assert args.model == "mlx-community/Qwen3.6-35B-A3B-8bit"
-    assert args.moe_experts == 20
+    assert args.moe_experts == 20  # explicit flag wins over any default
     assert args.moe_expert_threshold == 0.8
     assert args.moe_expert_layer_start == 25
     assert args.ctx_size == 131072
-    assert args.parallel == 4
+    assert args.parallel == 4  # explicit flag wins over the default (1)
 
 
 def test_ds4_aliases_equivalent():
@@ -125,8 +125,8 @@ def test_default_profile_injection(tmp_path, capsys, monkeypatch):
     argv = ["serve", "-m", str(d), "--temp", "0"]
     args = NS()
     apply_default_profile(args, d, argv)
-    assert args.moe_experts == 20
-    assert args.moe_expert_threshold == 0.8
+    assert args.moe_experts == 12
+    assert args.moe_expert_threshold == 0.75
     assert args.moe_expert_layer_start == 25
     assert args.moe_expert_layer_end == 39
     assert "default expansion profile injected" in capsys.readouterr().err
@@ -146,7 +146,7 @@ def test_default_profile_injection(tmp_path, capsys, monkeypatch):
 
 def test_profile_signature_and_fallback():
     p = default_profile_for(40, 256, 8)
-    assert p and p["max_experts"] == 20 and "layer_start" in p
+    assert p and p["max_experts"] == 12 and "layer_start" in p
     g = default_profile_for(48, 128, 8)
-    assert g and g["max_experts"] == 20 and "layer_start" not in g
+    assert g and g["max_experts"] == 12 and "layer_start" not in g
     assert default_profile_for(16, 4, 4) is None

@@ -55,10 +55,10 @@ agrimlxo mixed-quantize ~/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/s
 
 ```bash
 # profilo default AgrillaMoE iniettato automaticamente per Qwen3.6-35B-A3B
-# (esperti 20, soglia 0.80, layer 25–39); in stderr deve comparire:
-#   moe: default expansion profile injected (Qwen3.6-35B-A3B): ...
-#   moe: routed experts per token: 20 (model default 8; ranks 9..20 get linear influence decay 0.99..0.5)
-#   moe: expert threshold: keep experts while p >= 0.8 x p(rank 10) (experts 5..20 per token)
+# (esperti 12, soglia 0.75, layer 25-39); in stderr deve comparire:
+#   moe: default expansion profile injected (Qwen3.5/3.6-35B-A3B): ...
+#   moe: routed experts per token: 12 (model default 8; ranks 9..12 get linear influence decay 0.99..0.5)
+#   moe: expert threshold: keep experts while p >= 0.75 x p(rank 6) (experts 3..12 per token)
 #   moe: expansion active on layers 25..39 of 40
 agrimlxo serve -m <modello>
 ```

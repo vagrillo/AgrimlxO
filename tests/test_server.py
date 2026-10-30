@@ -121,3 +121,42 @@ def test_completions_endpoint(client):
 def test_slots_endpoint(client):
     slots = client.get("/slots").json()["slots"]
     assert len(slots) == 2 and slots[0]["busy"] is False
+
+
+def test_image_part_clear_error(client):
+    """Multimodal content parts are accepted at the API; images fail with a
+    clear message while the vision tower is not wired into the engine."""
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "cos'è in questa foto?"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxxx"}},
+                    ],
+                }
+            ],
+            "max_tokens": 4,
+        },
+    )
+    assert r.status_code == 400
+    assert "vision" in r.json()["detail"].lower() or "text-only" in r.json()["detail"].lower()
+
+
+def test_text_part_content_flattened(client):
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "1 2 3 4 5"}],
+                }
+            ],
+            "max_tokens": 4,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["usage"]["completion_tokens"] >= 1

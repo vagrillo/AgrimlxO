@@ -305,7 +305,7 @@ class Model(nn.Module):
     def layers(self):
         return self.model.layers
 
-    def make_cache(self, cache_type: str = "f16"):
+    def make_cache(self, cache_type: str = "auto"):
         return make_cache_for_layers(["full_attention"] * len(self.layers), cache_type)
 
     def sanitize(self, weights):
