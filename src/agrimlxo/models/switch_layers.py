@@ -46,6 +46,34 @@ def _quantize_experts(w, *, group_size, bits, mode):
     return mx.stack([q for q, _ in qs]), mx.stack([s for _, s in qs]), gs
 
 
+# MLX builds differ on whether mx.gather_qmm exposes the ``global_scale``
+# kwarg (newer refactors folded it into the nvfp4 mode path). Detect once,
+# lazily; the vendored upstream __call__ always passes the attribute through,
+# which crashes on builds without the kwarg even when the value is None.
+_GATHER_QMM_SUPPORTS_GLOBAL_SCALE = None
+
+
+def _gather_qmm(x, w, scales, biases, *, global_scale=None, **kwargs):
+    global _GATHER_QMM_SUPPORTS_GLOBAL_SCALE
+    if _GATHER_QMM_SUPPORTS_GLOBAL_SCALE is None:
+        try:
+            mx.gather_qmm(x, w, scales, biases, global_scale=None, **kwargs)
+            _GATHER_QMM_SUPPORTS_GLOBAL_SCALE = True
+        except TypeError:
+            _GATHER_QMM_SUPPORTS_GLOBAL_SCALE = False
+    if global_scale is not None and not _GATHER_QMM_SUPPORTS_GLOBAL_SCALE:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "gather_qmm on this mlx build has no global_scale support;"
+            " continuing without it (affects nvfp4 checkpoints only)"
+        )
+        global_scale = None
+    if global_scale is not None:
+        return mx.gather_qmm(x, w, scales, biases, global_scale=global_scale, **kwargs)
+    return mx.gather_qmm(x, w, scales, biases, **kwargs)
+
+
 class QuantizedSwitchLinear(nn.Module):
     def __init__(
         self,
@@ -102,17 +130,17 @@ class QuantizedSwitchLinear(nn.Module):
         return self.weight.shape[0]
 
     def __call__(self, x, indices, sorted_indices=False):
-        x = mx.gather_qmm(
+        x = _gather_qmm(
             x,
             self["weight"],
             self["scales"],
             self.get("biases"),
+            global_scale=self.global_scale,
             rhs_indices=indices,
             transpose=True,
             group_size=self.group_size,
             bits=self.bits,
             mode=self.mode,
-            global_scale=self.global_scale,
             sorted_indices=sorted_indices,
         )
         if "bias" in self:
