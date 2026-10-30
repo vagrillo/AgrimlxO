@@ -477,6 +477,47 @@ class MoERuntime:
             self._live_sum / self._live_n if self._live_n else None
         )
 
+    def apply_config(
+        self, config: MoEExpansionConfig, reduce: Optional[MoEReduceConfig] = None
+    ) -> List[str]:
+        """Reconfigure at runtime (webui MOE panel). Validates against the
+        geometry captured at setup and swaps the per-call parameters; returns
+        the new banner lines. Raises ValueError on invalid input."""
+        if self.k_native <= 0:
+            raise ValueError("runtime non inizializzato")
+        cfg = config or MoEExpansionConfig()
+        red = reduce if reduce is not None else self.reduce
+        if red.factor > 0.0 and cfg.requested:
+            raise ValueError(
+                "--moe-reduce e l'espansione sono mutuamente esclusivi"
+            )
+        n = cfg.resolve_n(self.k_native, self.n_expert) if cfg.requested else 0
+        resolved = validate_expansion(
+            {**cfg.__dict__},  # validated again below with a real instance
+            True,
+            self.k_native,
+            self.n_expert,
+            self.n_layer,
+            self.norm_topk_prob,
+        ) if False else None
+        # validate_expansion expects a config object; reuse the instance path
+        new_rt = MoERuntime(
+            self.n_layer, self.norm_topk_prob, config=cfg, reduce=red
+        )
+        new_rt.setup(True, self.k_native, self.n_expert)
+        # swap in place: le chiamate attive leggono i campi a ogni passaggio
+        self.config = cfg
+        self.reduce = red
+        self.n = new_rt.n
+        self.layer_start = new_rt.layer_start
+        self.layer_end = new_rt.layer_end
+        self.reset_stats()
+        self._lazy.clear()
+        self._live_sum = 0.0
+        self._live_n = 0
+        self._live_last = None
+        return self.banner_lines()
+
     def reset_stats(self):
         """Clear the observability window (e.g. after warmup)."""
         self._stats.clear()

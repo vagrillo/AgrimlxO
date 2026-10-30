@@ -535,6 +535,70 @@ def create_app(state: ServerState) -> FastAPI:
             ]
         return Response(content="\n".join(lines) + "\n", media_type="text/plain")
 
+    # ---- MoE runtime reconfiguration ----
+
+    @app.get("/moe")
+    def moe_state(_: None = Depends(auth)):
+        rt = state.engine.runtime
+        if rt is None:
+            return {"supported": False}
+        c = rt.config
+        return {
+            "supported": True,
+            "active": rt.active,
+            "reduce_active": rt.reduce_active,
+            "native_top_k": rt.k_native,
+            "n_expert": rt.n_expert,
+            "max_experts": c.max_experts,
+            "threshold": c.threshold,
+            "decay_end": c.decay_end,
+            "no_decay": c.no_decay,
+            "renorm": c.renorm,
+            "layer_start": c.layer_start,
+            "layer_end": c.layer_end,
+            "reduce_factor": rt.reduce.factor,
+            "reduce_layers": list(rt.reduce.layers),
+            "default_max_experts": 12, "default_threshold": 0.75,
+        }
+
+    @app.post("/moe")
+    def moe_update(body: dict, _: None = Depends(auth)):
+        rt = state.engine.runtime
+        if rt is None:
+            raise HTTPException(400, "questo modello non espone il runtime MoE")
+        from .moe_expansion import MoEExpansionConfig, MoEReduceConfig
+
+        c = rt.config
+        enabled = body.get("enabled")
+        max_experts = int(body.get("max_experts", c.max_experts) or 0)
+        if enabled is False:
+            max_experts = 0
+        cfg = MoEExpansionConfig(
+            max_experts=max_experts,
+            add_experts=0,
+            threshold=float(body.get("threshold", c.threshold) or 0.0),
+            decay_end=float(body.get("decay_end", c.decay_end) or 0.5),
+            no_decay=bool(body.get("no_decay", c.no_decay)),
+            renorm=body.get("renorm", c.renorm),
+            layer_start=float(body.get("layer_start", c.layer_start)),
+            layer_end=float(body.get("layer_end", c.layer_end)),
+        )
+        rl = body.get("reduce_layers")
+        reduce = MoEReduceConfig(
+            factor=float(body.get("reduce_factor", 0.0) or 0.0),
+            layers=tuple(int(x) for x in rl.split("-")) if rl else rt.reduce.layers,
+        )
+        try:
+            lines = rt.apply_config(cfg, reduce)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        for l in lines:
+            import sys
+
+            print(l, file=sys.stderr, flush=True)
+        return {"ok": True, "active": rt.active, "reduce_active": rt.reduce_active,
+                "n": rt.n, "banner": lines}
+
     # ---- chat completions ----
 
     @app.post("/v1/chat/completions")
@@ -623,6 +687,8 @@ def create_app(state: ServerState) -> FastAPI:
                 content += tool_text
                 msgs.append({"role": "assistant", "content": phase_content})
                 msgs.append({"role": "user", "content": tool_text})
+                if not state.tools.names():
+                    state.tools.reload()  # ./tools può apparire dopo l'avvio
                 tools_schema = (
                     state.tools.openai_schema()
                     if state.tools and _tools_enabled(state, req) else None
