@@ -66,7 +66,17 @@ class VisionProcessor:
         cls = getattr(transformers, cls_name, None)
         if cls is None:
             cls = getattr(transformers, "Qwen2VLImageProcessor")
-        self.image_processor = cls(**kwargs)
+        try:
+            self.image_processor = cls(**kwargs)
+        except ImportError as e:
+            # the "Fast" variants need torch/torchvision: use the slow class
+            if "torchvision" not in str(e).lower() and "torch" not in str(e).lower():
+                raise
+            slow_name = cls_name.replace("Fast", "")
+            slow = getattr(transformers, slow_name, None) or getattr(
+                transformers, "Qwen2VLImageProcessor"
+            )
+            self.image_processor = slow(**kwargs)
         self.mode = "manual"
 
     def prepare(

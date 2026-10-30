@@ -121,11 +121,12 @@ class ServerState:
                 # mai fatale: il server parte text-only con un messaggio chiaro
                 import logging
 
+                self.vision_processor_error = f"{type(e).__name__}: {e}"
                 logging.getLogger(__name__).warning(
                     "vision processor non disponibile (%s); il server parte"
                     " text-only e le immagini risponderanno con un errore"
                     " esplicito",
-                    e,
+                    self.vision_processor_error,
                 )
                 self.vision_processor = None
         self.active_slots: List[Optional[float]] = [None] * max(1, args.parallel)
@@ -213,9 +214,10 @@ class ServerState:
         if image_urls and has_vision and self.vision_processor is None:
             raise HTTPException(
                 400,
-                "le immagini sono supportate ma il processor non si e' caricato"
-                " su questo ambiente (serve torch/torchvision, oppure aggiorna"
-                " transformers). Il testo funziona normalmente.",
+                "processor vision non caricato su questo ambiente — motivo: "
+                + str(getattr(self, "vision_processor_error", "sconosciuto"))
+                + " | rimedi: pip install torchvision (abilita il processor"
+                " completo) oppure incolla questo messaggio",
             )
         if image_urls and has_vision:
             rendered = self.tokenizer.apply_chat_template(flat, tokenize=False, **kwargs)
@@ -420,7 +422,10 @@ def create_app(state: ServerState) -> FastAPI:
     def index():
         from pathlib import Path
 
-        return FileResponse(Path(__file__).parent / "webui" / "index.html")
+        return FileResponse(
+            Path(__file__).parent / "webui" / "index.html",
+            headers={"Cache-Control": "no-store"},
+        )
 
     # ---- health / info ----
 
