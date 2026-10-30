@@ -32,6 +32,7 @@ from .pipeline import PipelineMixin
 from .rope_utils import initialize_rope
 from .switch_layers import SwitchGLU
 from .moe_block import routed_forward
+from .mrope import MRoPERotaryEmbedding
 from ..moe_expansion import MoERuntime
 
 
@@ -151,12 +152,25 @@ class Attention(nn.Module):
             scaling_config=args.rope_scaling,
             max_position_embeddings=args.max_position_embeddings,
         )
+        # interleaved MRoPE for multimodal inputs (position_ids [3, B, L]);
+        # falls back to the plain partial rope when no position_ids are given
+        section = (args.rope_parameters or {}).get("mrope_section")
+        if section:
+            self.mrope = MRoPERotaryEmbedding(
+                int(self.head_dim * args.partial_rotary_factor),
+                max_position_embeddings=args.max_position_embeddings,
+                base=args.rope_theta,
+                mrope_section=list(section),
+            )
+        else:
+            self.mrope = None
 
     def __call__(
         self,
         x: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
+        position_ids: Optional[mx.array] = None,
     ) -> mx.array:
         B, L, D = x.shape
 
@@ -176,7 +190,11 @@ class Attention(nn.Module):
             0, 2, 1, 3
         )
 
-        if cache is not None:
+        if position_ids is not None and self.mrope is not None:
+            queries, keys = self.mrope(queries, keys, position_ids)
+            if cache is not None:
+                keys, values = cache.update_and_fetch(keys, values)
+        elif cache is not None:
             queries = self.rope(queries, offset=cache.offset)
             keys = self.rope(keys, offset=cache.offset)
             keys, values = cache.update_and_fetch(keys, values)
@@ -415,11 +433,12 @@ class DecoderLayer(nn.Module):
         x: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
+        position_ids: Optional[mx.array] = None,
     ) -> mx.array:
         if self.is_linear:
             r = self.linear_attn(self.input_layernorm(x), mask, cache)
         else:
-            r = self.self_attn(self.input_layernorm(x), mask, cache)
+            r = self.self_attn(self.input_layernorm(x), mask, cache, position_ids)
         h = x + r
         out = h + self.mlp(self.post_attention_layernorm(h))
         return out
@@ -452,6 +471,7 @@ class Qwen3_5TextModel(PipelineMixin, nn.Module):
         inputs: mx.array,
         cache: Optional[Any] = None,
         input_embeddings: Optional[mx.array] = None,
+        position_ids: Optional[mx.array] = None,
     ) -> mx.array:
         if input_embeddings is not None:
             hidden_states = input_embeddings
@@ -470,7 +490,9 @@ class Qwen3_5TextModel(PipelineMixin, nn.Module):
 
         for layer, c in zip(self.layers, cache):
             mask = ssm_mask if layer.is_linear else fa_mask
-            hidden_states = layer(hidden_states, mask=mask, cache=c)
+            hidden_states = layer(
+                hidden_states, mask=mask, cache=c, position_ids=position_ids
+            )
 
         return self.norm(hidden_states)
 
@@ -494,8 +516,11 @@ class TextModel(nn.Module):
         inputs: mx.array,
         cache: Optional[Any] = None,
         input_embeddings: Optional[mx.array] = None,
+        position_ids: Optional[mx.array] = None,
     ):
-        out = self.model(inputs, cache, input_embeddings=input_embeddings)
+        out = self.model(
+            inputs, cache, input_embeddings=input_embeddings, position_ids=position_ids
+        )
         if self.args.tie_word_embeddings:
             out = self.model.embed_tokens.as_linear(out)
         else:
@@ -556,11 +581,23 @@ class TextModel(nn.Module):
 class ModelArgs(BaseModelArgs):
     model_type: str
     text_config: dict
+    # multimodal fields (top-level in the HF config)
+    image_token_id: Optional[int] = None
+    video_token_id: Optional[int] = None
+    vision_start_token_id: Optional[int] = None
+    vision_config: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, params):
         if "text_config" not in params:
-            return cls(model_type=params["model_type"], text_config=params)
+            return cls(
+                model_type=params["model_type"],
+                text_config=params,
+                image_token_id=params.get("image_token_id"),
+                video_token_id=params.get("video_token_id"),
+                vision_start_token_id=params.get("vision_start_token_id"),
+                vision_config=params.get("vision_config"),
+            )
         return super().from_dict(params)
 
 
@@ -579,15 +616,156 @@ class Model(nn.Module):
             expansion=expansion,
             mixed_quant=mixed_quant,
         )
+        # multimodal: the vision tower is built whenever the config carries a
+        # vision_config; without it the model is text-only
+        self.vision_tower = None
+        self._mrope_delta = 0
+        if args.vision_config:
+            from .vision import VisionModel
+            from .vision_config import VisionConfig
+
+            self.vision_tower = VisionModel(
+                VisionConfig.from_dict(args.vision_config)
+            )
+
+    # -- multimodal ------------------------------------------------------------
+
+    def run_vision(
+        self, pixel_values: mx.array, image_grid_thw: Optional[mx.array]
+    ) -> mx.array:
+        """Image patches -> [n_image_tokens, hidden_size] features."""
+        dtype = self.language_model.model.embed_tokens.weight.dtype
+        hidden, _ = self.vision_tower(
+            pixel_values.astype(dtype), image_grid_thw
+        )
+        return hidden
+
+    @staticmethod
+    def splice_image_features(
+        image_features: mx.array,
+        inputs_embeds: mx.array,
+        input_ids: mx.array,
+        image_token_id: int,
+    ) -> mx.array:
+        """Replace every image-token embedding with the next vision feature
+        (features are in token order)."""
+        mask = (input_ids == image_token_id).reshape(-1)
+        n = int(mask.sum())
+        if n != image_features.shape[0]:
+            raise ValueError(
+                f"image features and image tokens do not match:"
+                f" tokens {n}, features {image_features.shape[0]}"
+            )
+        flat = inputs_embeds.reshape(-1, inputs_embeds.shape[-1])
+        idx = mx.cumsum(mask.astype(mx.int32)) - 1
+        idx = mx.clip(idx, 0, n - 1)
+        gathered = image_features[idx]
+        out = mx.where(mask[:, None], gathered, flat)
+        return out.reshape(inputs_embeds.shape)
+
+    def get_rope_index(
+        self,
+        input_ids: mx.array,
+        image_grid_thw: Optional[mx.array] = None,
+    ):
+        """Interleaved MRoPE positions [3, 1, L] and the generation delta.
+
+        Simplified from mlx-vlm's LanguageModel.get_rope_index: batch size 1,
+        no attention mask (single sequence), images only (video not served).
+        """
+        L = input_ids.shape[-1]
+        image_token_id = self.args.image_token_id
+        vision_start_token_id = self.args.vision_start_token_id
+        merge = self.args.vision_config["spatial_merge_size"]
+        tokens = input_ids.reshape(-1).tolist()
+        grids = (
+            image_grid_thw.tolist() if image_grid_thw is not None else []
+        )
+        # one grid per <|vision_start|> that is followed by image tokens
+        n_images = sum(
+            1
+            for i, t in enumerate(tokens[:-1])
+            if t == vision_start_token_id and tokens[i + 1] == image_token_id
+        )
+        if n_images == 0 or not grids:
+            pos = mx.tile(mx.arange(L).reshape(1, -1), (3, 1, 1)).astype(mx.int32)
+            return pos, 0
+
+        llm_pos_ids: List[mx.array] = []
+        st = 0
+        image_index = 0
+        for _ in range(n_images):
+            ed = tokens.index(image_token_id, st)
+            t, h, w = grids[image_index]
+            image_index += 1
+            llm_grid_t, llm_grid_h, llm_grid_w = int(t), h // merge, w // merge
+            text_len = ed - st
+            st_idx = (
+                int(llm_pos_ids[-1].max()) + 1 if llm_pos_ids else 0
+            )
+            text_pos = mx.broadcast_to(
+                mx.arange(text_len).reshape(1, -1), (3, text_len)
+            )
+            llm_pos_ids.append(text_pos + st_idx)
+            t_i = mx.arange(llm_grid_t).reshape(-1, 1)
+            h_i = mx.arange(llm_grid_h).reshape(1, -1, 1)
+            w_i = mx.arange(llm_grid_w).reshape(1, 1, -1)
+            thw = mx.stack(
+                [
+                    mx.broadcast_to(t_i, (llm_grid_t, llm_grid_h, llm_grid_w)).reshape(-1),
+                    mx.broadcast_to(h_i, (llm_grid_t, llm_grid_h, llm_grid_w)).reshape(-1),
+                    mx.broadcast_to(w_i, (llm_grid_t, llm_grid_h, llm_grid_w)).reshape(-1),
+                ]
+            )
+            llm_pos_ids.append(thw + text_len + st_idx)
+            st = ed + llm_grid_t * llm_grid_h * llm_grid_w
+        if st < L:
+            st_idx = int(llm_pos_ids[-1].max()) + 1
+            text_len = L - st
+            llm_pos_ids.append(
+                mx.broadcast_to(mx.arange(text_len).reshape(1, -1), (3, text_len))
+                + st_idx
+            )
+        positions = mx.concatenate(llm_pos_ids, axis=1).reshape(3, 1, -1).astype(mx.int32)
+        delta = int(positions.max()) + 1 - L
+        return positions, delta
 
     def __call__(
         self,
         inputs: mx.array,
         cache=None,
         input_embeddings: Optional[mx.array] = None,
+        position_ids: Optional[mx.array] = None,
+        pixel_values: Optional[mx.array] = None,
+        image_grid_thw: Optional[mx.array] = None,
     ):
+        if self.vision_tower is not None and position_ids is None:
+            # multimodal or text-only position handling for the VLM
+            if pixel_values is not None:
+                embeds = self.language_model.model.embed_tokens(inputs)
+                features = self.run_vision(pixel_values, image_grid_thw)
+                input_embeddings = self.splice_image_features(
+                    features, embeds, inputs, self.args.image_token_id
+                )
+                position_ids, delta = self.get_rope_index(inputs, image_grid_thw)
+                self._mrope_delta = int(delta)
+            elif inputs.shape[-1] > 1:
+                position_ids = mx.tile(
+                    mx.arange(inputs.shape[-1]).reshape(1, -1), (3, 1, 1)
+                ).astype(mx.int32)
+                self._mrope_delta = 0
+            elif self._mrope_delta:
+                offset = cache[self.language_model.model.fa_idx].offset if cache else 0
+                position_ids = mx.tile(
+                    (mx.arange(1).reshape(1, 1) + offset + self._mrope_delta),
+                    (3, 1, 1),
+                ).astype(mx.int32)
+
         return self.language_model(
-            inputs, cache=cache, input_embeddings=input_embeddings
+            inputs,
+            cache=cache,
+            input_embeddings=input_embeddings,
+            position_ids=position_ids,
         )
 
     @property
@@ -603,8 +781,14 @@ class Model(nn.Module):
 
     def sanitize(self, weights):
         sanitized = {}
+        vision_sanitized = {}
         for key, value in weights.items():
-            if key.startswith("vision_tower") or key.startswith("model.visual"):
+            # keep the vision tower (remap HF prefixes) instead of dropping it
+            if key.startswith("model.visual"):
+                vision_sanitized["vision_tower" + key[len("model.visual"):]] = value
+                continue
+            if key.startswith("vision_tower"):
+                vision_sanitized[key] = value
                 continue
             if key.startswith("model.language_model"):
                 key = key.replace("model.language_model", "language_model.model")
@@ -613,6 +797,7 @@ class Model(nn.Module):
             else:
                 key = "language_model." + key
             sanitized[key] = value
+        sanitized.update(vision_sanitized)
 
         n_layers = self.language_model.args.num_hidden_layers
         for l in range(n_layers):
@@ -648,7 +833,11 @@ class Model(nn.Module):
                     )
                     sanitized[f"{prefix}.switch_mlp.{name}.weight"] = stacked
 
-        return self.language_model.sanitize(sanitized)
+        text_weights = self.language_model.sanitize(
+            {k: v for k, v in sanitized.items() if not k.startswith("vision_tower")}
+        )
+        text_weights.update(vision_sanitized)
+        return text_weights
 
     @property
     def quant_predicate(self):

@@ -102,6 +102,11 @@ class ServerState:
         model = str(args.model or "qwen3.x-35b-moe")
         # local dir -> its name; HF repo id stays intact
         self.model_name = Path(model).name if os.path.isdir(model) else model
+        self.vision_processor = None
+        if getattr(engine.loaded.model, "vision_tower", None) is not None:
+            from .processor import VisionProcessor
+
+            self.vision_processor = VisionProcessor(engine.loaded.path)
         self.active_slots: List[Optional[float]] = [None] * max(1, args.parallel)
         self.counters = {"requests": 0, "prompt_tokens": 0, "generated_tokens": 0}
 
@@ -151,15 +156,15 @@ class ServerState:
             emit_prefill_stats=bool(getattr(req, "stream", False)),
         )
 
-    def prompt_tokens_for_chat(self, messages: List[dict], template_kwargs: dict) -> List[int]:
+    def prompt_tokens_for_chat(self, messages: List[dict], template_kwargs: dict):
+        """Token ids for the request, or (with images) the full processor
+        inputs dict. Raises HTTPException(400) when images arrive but the
+        checkpoint has no vision tower."""
         kwargs = dict(template_kwargs or {})
         if kwargs.get("enable_thinking") is None:
             kwargs.pop("enable_thinking", None)
-        # multimodal content parts (OpenAI style): flatten to text; images are
-        # accepted at the API but the engine is text-only until the vision
-        # tower ships — fail with a clear message instead of a template error
         flat = []
-        n_images = 0
+        image_urls: List[str] = []
         for m in messages:
             c = m.get("content")
             if isinstance(c, list):
@@ -168,17 +173,25 @@ class ServerState:
                     if isinstance(part, dict) and part.get("type") == "text":
                         texts.append(str(part.get("text", "")))
                     elif isinstance(part, dict) and part.get("type") == "image_url":
-                        n_images += 1
+                        url = part.get("image_url", {})
+                        url = url.get("url", "") if isinstance(url, dict) else str(url)
+                        if url:
+                            image_urls.append(url)
                 m = dict(m)
                 m["content"] = "\n".join(t for t in texts if t)
             flat.append(m)
-        if n_images:
+
+        has_vision = getattr(self.engine.loaded.model, "vision_tower", None) is not None
+        if image_urls and not has_vision:
             raise HTTPException(
                 400,
-                f"{n_images} image(s) received but this build is text-only:"
-                " the Qwen3.5 vision tower is not wired into the engine yet"
-                " (planned next). Text attachments work today.",
+                f"{len(image_urls)} image(s) received but this checkpoint has"
+                " no vision tower (text-only model). Text attachments work.",
             )
+        if image_urls and has_vision:
+            rendered = self.tokenizer.apply_chat_template(flat, tokenize=False, **kwargs)
+            prepared = self.vision_processor.prepare(rendered, image_urls)
+            return prepared
         return self.tokenizer.apply_chat_template(flat, **kwargs)
 
     def slot_acquire(self) -> "SlotHandle":
@@ -210,7 +223,8 @@ def _sse(data: str) -> str:
 
 
 async def _run_generation(
-    state: ServerState, tokens: List[int], params: GenParams, slot_id: int
+    state: ServerState, tokens: List[int], params: GenParams, slot_id: int,
+    images: Optional[dict] = None,
 ):
     """Async generator of Steps; the blocking engine runs in a worker thread
     and forwards steps through a queue. The final Step carries finish_reason.
@@ -220,7 +234,7 @@ async def _run_generation(
 
     def run():
         try:
-            for step in state.engine.generate(tokens, params, slot_id):
+            for step in state.engine.generate(tokens, params, slot_id, images):
                 q.put(("step", step))
             q.put(("done", None))
         except ContextOverflowError as e:
@@ -458,12 +472,21 @@ def create_app(state: ServerState) -> FastAPI:
         if req.enable_thinking is not None:
             template_kwargs["enable_thinking"] = req.enable_thinking
         try:
-            tokens = state.prompt_tokens_for_chat(messages, template_kwargs)
+            prepared = state.prompt_tokens_for_chat(messages, template_kwargs)
         except Exception as e:
             raise HTTPException(400, f"chat template failed: {e}")
 
         params = state.gen_params(req)
         slot = state.slot_acquire()
+        images = None
+        if isinstance(prepared, dict):
+            images = {
+                "pixel_values": prepared["pixel_values"],
+                "image_grid_thw": prepared["image_grid_thw"],
+            }
+            tokens = prepared["input_ids"]
+        else:
+            tokens = prepared
         state.counters["requests"] += 1
         state.counters["prompt_tokens"] += len(tokens)
         split_enabled = (
@@ -474,23 +497,27 @@ def create_app(state: ServerState) -> FastAPI:
         try:
             if req.stream:
                 return StreamingResponse(
-                    _chat_stream(state, req, tokens, params, slot, split_enabled),
+                    _chat_stream(state, req, tokens, params, slot, split_enabled, images),
                     media_type="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                 )
-            return await _chat_once(state, req, tokens, params, slot, split_enabled)
+            return await _chat_once(
+                state, req, tokens, params, slot, split_enabled, images
+            )
         except HTTPException:
             slot.release()
             raise
 
-    async def _chat_once(state, req, tokens, params, slot, split_enabled):
+    async def _chat_once(state, req, tokens, params, slot, split_enabled, images=None):
         rid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         feed = _make_reasoning_feed(split_enabled)
         content = ""
         reasoning = ""
         final: Optional[Step] = None
         try:
-            async for step, is_final in _run_generation(state, tokens, params, slot.id):
+            async for step, is_final in _run_generation(
+                state, tokens, params, slot.id, images
+            ):
                 if is_final:
                     final = step
                     break
@@ -529,14 +556,16 @@ def create_app(state: ServerState) -> FastAPI:
             "usage": usage,
         }
 
-    async def _chat_stream(state, req, tokens, params, slot, split_enabled):
+    async def _chat_stream(state, req, tokens, params, slot, split_enabled, images=None):
         rid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         feed = _make_reasoning_feed(split_enabled)
         created = int(time.time())
         include_usage = bool((req.stream_options or {}).get("include_usage"))
         final: Optional[Step] = None
         try:
-            async for step, is_final in _run_generation(state, tokens, params, slot.id):
+            async for step, is_final in _run_generation(
+                state, tokens, params, slot.id, images
+            ):
                 if is_final:
                     final = step
                     break
@@ -669,7 +698,9 @@ def create_app(state: ServerState) -> FastAPI:
             content = ""
             final: Optional[Step] = None
             try:
-                async for step, is_final in _run_generation(state, tokens, params, slot.id):
+                async for step, is_final in _run_generation(
+                state, tokens, params, slot.id, None
+            ):
                     if is_final:
                         final = step
                         break
@@ -710,7 +741,9 @@ def create_app(state: ServerState) -> FastAPI:
                 slot = state.slot_acquire()
                 final: Optional[Step] = None
                 try:
-                    async for step, is_final in _run_generation(state, tokens, params, slot.id):
+                    async for step, is_final in _run_generation(
+                state, tokens, params, slot.id, None
+            ):
                         if is_final:
                             final = step
                             break

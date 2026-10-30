@@ -190,16 +190,19 @@ class Engine:
     # -- generation ----------------------------------------------------------
 
     def generate(
-        self, prompt: List[int], params: GenParams, slot_id: int = 0
+        self, prompt: List[int], params: GenParams, slot_id: int = 0,
+        images: Optional[dict] = None,
     ) -> Iterator[Step]:
         """Serialize generations on the engine lock (MLX decode runs on a
         single GPU stream), then yield one Step per generated token. The
-        final Step carries the finish_reason and no text."""
+        final Step carries the finish_reason and no text. ``images`` carries
+        prebuilt ``pixel_values``/``image_grid_thw`` for multimodal prefill."""
         with self._lock:
-            yield from self._generate_locked(prompt, params, slot_id)
+            yield from self._generate_locked(prompt, params, slot_id, images)
 
     def _generate_locked(
-        self, prompt: List[int], params: GenParams, slot_id: int
+        self, prompt: List[int], params: GenParams, slot_id: int,
+        images: Optional[dict] = None,
     ) -> Iterator[Step]:
         """Yield one Step per generated token (blocking; run in a worker
         thread)."""
@@ -266,9 +269,18 @@ class Engine:
         def forward_chunked(segment: List[int]):
             nonlocal total, caches
             out = None
-            for cs in range(0, len(segment), self.prefill_step_size):
-                chunk = segment[cs : cs + self.prefill_step_size]
-                out = self.model(mx.array([chunk]), cache=caches)
+            # with images the prefill must be a single forward (the splice
+            # and the mrope positions need the whole sequence)
+            step = len(segment) if images else self.prefill_step_size
+            for cs in range(0, len(segment), step):
+                chunk = segment[cs : cs + step]
+                kwargs = {}
+                if images is not None:
+                    kwargs = {
+                        "pixel_values": images["pixel_values"],
+                        "image_grid_thw": images["image_grid_thw"],
+                    }
+                out = self.model(mx.array([chunk]), cache=caches, **kwargs)
                 pos0 = total
                 total += len(chunk)
                 slot.tokens.extend(chunk)
