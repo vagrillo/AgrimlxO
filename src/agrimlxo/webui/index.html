@@ -139,6 +139,11 @@ textarea { resize: vertical; min-height: 64px; }
 .toolcard .tlbl { font-size: 11px; font-weight: 700; letter-spacing: .4px; padding: 4px 10px; color: var(--accent2); border-bottom: 1px solid var(--border); }
 .toolcard.result .tlbl { color: var(--ok); }
 .toolcard pre { margin: 0; padding: 8px 10px; font-size: 12px; font-family: var(--mono); overflow-x: auto; max-height: 260px; }
+.msgacts { display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
+.msg:hover .msgacts { opacity: 1; }
+.msgacts .regen { background: none; border: 1px solid var(--border); color: var(--text2);
+  border-radius: 6px; padding: 2px 8px; cursor: pointer; font-size: 12px; }
+.msgacts .regen:hover { color: var(--accent2); border-color: var(--accent); }
 .meta { font-size: 11px; color: var(--text2); font-family: var(--mono); }
 .meta.live { color: var(--accent2); }
 .meta.live::before { content: "⏱ "; }
@@ -438,6 +443,14 @@ function addMsg(role, atts){
   }
   const bubble = document.createElement("div"); bubble.className = "bubble";
   div.appendChild(bubble);
+  if (role === "assistant") {
+    const acts = document.createElement("div"); acts.className = "msgacts";
+    const re = document.createElement("button"); re.className = "regen";
+    re.title = "rigenera la risposta"; re.textContent = "🔄";
+    re.onclick = () => regenerate(div);
+    acts.appendChild(re);
+    div.appendChild(acts);
+  }
   $("convo").appendChild(div);
   scrollBottom();
   return {div, bubble};
@@ -667,7 +680,28 @@ async function send(){
   history.push(userEntry);
   const um = addMsg("user", storedAtts);
   um.bubble.textContent = text || "(allegati)";
+  // fase di generazione (usata da send e da rigenera)
+  await streamAssistant(null);
+}
 
+async function regenerate(assistantDiv){
+  if (generating) return;
+  const idx = Array.from($("convo").children).indexOf(assistantDiv);
+  if (idx <= 0) return;  // serve una domanda prima della risposta
+  history = history.slice(0, idx);
+  $("convo").innerHTML = "";
+  for (const m of history) {
+    const msg = addMsg(m.role, m.attachments);
+    msg.bubble.innerHTML = m.role === "user" ? esc(m.content) : renderMD(m.content);
+    if (m.reasoning) { const b = addReasoning(msg); b.textContent = m.reasoning; }
+    if (m.metaLine) { const mm = document.createElement("div"); mm.className = "meta"; mm.textContent = m.metaLine; msg.div.appendChild(mm); }
+    wireSvgToggles(msg.bubble);
+  }
+  saveCurrentChat();
+  await streamAssistant(null);
+}
+
+async function streamAssistant(apiContent){
   const msg = addMsg("assistant");
   const cursor = document.createElement("span"); cursor.className = "cursor";
   liveEl = document.createElement("div"); liveEl.className = "meta live";
@@ -680,27 +714,10 @@ async function send(){
 
   try {
     const msgs = buildMessages();
-    msgs.push({
-      role: "user",
-      content: apiContent.length > 1 ? apiContent : (apiContent[0] ? apiContent[0].text : ""),
-    });
-    const res = await fetch("/v1/chat/completions", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      signal: ctrl.signal,
-      body: JSON.stringify({
-        messages: msgs,
-        stream: true,
-        stream_options: {include_usage: true},
-        temperature: settings.temp, top_k: settings.top_k, top_p: settings.top_p,
-        min_p: settings.min_p, repetition_penalty: settings.repeat_penalty,
-        max_tokens: settings.n_predict < 0 ? -1 : settings.n_predict,
-        reasoning_budget: settings.reasoning_budget || 0,
-        chat_template_kwargs: {enable_thinking: $("think").checked},
-        tools: $("usetools").checked,
-        seed: parseInt($("seed").value) || null,
-      }),
-    });
+    if (apiContent) {
+      // sostituisce l'ultimo messaggio utente (testo) con le parts (immagini)
+      msgs[msgs.length - 1] = {role: "user", content: apiContent.length > 1 ? apiContent : (apiContent[0] ? apiContent[0].text : "")};
+    }
     if (!res.ok) {
       let detail = await res.text();
       try { detail = JSON.parse(detail).detail || detail; } catch(e) {}
