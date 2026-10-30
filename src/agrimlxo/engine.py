@@ -263,6 +263,10 @@ class Engine:
                     self._moe_observability(pos0, total)
                 if cs + self.prefill_step_size < len(segment):
                     mx.eval(out)
+            # sync the last chunk NOW so prefill_ms includes the GPU work
+            # (otherwise it would be silently billed to the first decode step)
+            if out is not None:
+                mx.eval(out)
             return out
 
         def step_one(tok: int):
