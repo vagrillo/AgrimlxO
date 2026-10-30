@@ -718,6 +718,23 @@ async function streamAssistant(apiContent){
       // sostituisce l'ultimo messaggio utente (testo) con le parts (immagini)
       msgs[msgs.length - 1] = {role: "user", content: apiContent.length > 1 ? apiContent : (apiContent[0] ? apiContent[0].text : "")};
     }
+    const res = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        messages: msgs,
+        stream: true,
+        stream_options: {include_usage: true},
+        temperature: settings.temp, top_k: settings.top_k, top_p: settings.top_p,
+        min_p: settings.min_p, repetition_penalty: settings.repeat_penalty,
+        max_tokens: settings.n_predict < 0 ? -1 : settings.n_predict,
+        reasoning_budget: settings.reasoning_budget || 0,
+        chat_template_kwargs: {enable_thinking: $("think").checked},
+        tools: $("usetools").checked,
+        seed: parseInt($("seed").value) || null,
+      }),
+    });
     if (!res.ok) {
       let detail = await res.text();
       try { detail = JSON.parse(detail).detail || detail; } catch(e) {}
