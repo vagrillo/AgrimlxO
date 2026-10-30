@@ -188,6 +188,7 @@ class ServerState:
             kwargs.pop("enable_thinking", None)
         flat = []
         image_urls: List[str] = []
+        vision_block = "<|vision_start|><|image_pad|><|vision_end|>"
         for m in messages:
             c = m.get("content")
             if isinstance(c, list):
@@ -200,6 +201,10 @@ class ServerState:
                         url = url.get("url", "") if isinstance(url, dict) else str(url)
                         if url:
                             image_urls.append(url)
+                            # keep the vision placeholder in the rendered text:
+                            # the processor expands each <|image_pad|> run to
+                            # the image's merged-token count
+                            texts.append(vision_block)
                 m = dict(m)
                 m["content"] = "\n".join(t for t in texts if t)
             flat.append(m)
