@@ -109,7 +109,13 @@ class ServerState:
         if getattr(engine.loaded.model, "vision_tower", None) is not None:
             from .processor import VisionProcessor
 
-            self.vision_processor = VisionProcessor(engine.loaded.path)
+            m = engine.loaded.model
+            vcfg = getattr(m.args, "vision_config", None) or {}
+            self.vision_processor = VisionProcessor(
+                engine.loaded.path,
+                image_token_id=getattr(m.args, "image_token_id", None),
+                spatial_merge_size=int(vcfg.get("spatial_merge_size", 2)),
+            )
         self.active_slots: List[Optional[float]] = [None] * max(1, args.parallel)
         self.counters = {"requests": 0, "prompt_tokens": 0, "generated_tokens": 0}
 
