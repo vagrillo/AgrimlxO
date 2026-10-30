@@ -186,6 +186,14 @@ def _add_serve_args(p: argparse.ArgumentParser):
                         " for large prefill batches; reorders the fp accumulation vs the"
                         " stock ops (also AGRIMLXO_FAST_MOE=1; default off)")
 
+    # ---- tools ----
+    p.add_argument("--tools", dest="tools", action="store_true", default=False,
+                   help="enable the local tool loop: the model can call the python"
+                        " scripts in --tools-dir (the chat template advertises them;"
+                        " a <tool_call> block is executed and the result fed back)")
+    p.add_argument("--tools-dir", dest="tools_dir", default="./tools",
+                   help="directory of tool scripts (default: ./tools)")
+
     # ---- speed ----
     p.add_argument("--no-compile", dest="no_compile", action="store_true", default=False,
                    help="disable mx.compile of the pure FFN sub-calls (decode/prefill speed)")

@@ -33,6 +33,7 @@ from pydantic import BaseModel
 
 from ._version import __version__
 from .engine import ContextOverflowError, Engine, GenParams, Step, ThinkSplit
+from .tools_registry import ToolRegistry, parse_tool_calls
 
 
 # -- request schemas (OpenAI-compatible subset) --------------------------------
@@ -65,6 +66,7 @@ class ChatCompletionRequest(BaseModel):
     reasoning_budget: Optional[int] = None
     chat_template_kwargs: Optional[dict] = None
     enable_thinking: Optional[bool] = None
+    tools: Optional[bool] = None
     n: Optional[int] = 1
 
 
@@ -102,6 +104,7 @@ class ServerState:
         model = str(args.model or "qwen3.x-35b-moe")
         # local dir -> its name; HF repo id stays intact
         self.model_name = Path(model).name if os.path.isdir(model) else model
+        self.tools = ToolRegistry(getattr(args, "tools_dir", "./tools"))
         self.vision_processor = None
         if getattr(engine.loaded.model, "vision_tower", None) is not None:
             from .processor import VisionProcessor
@@ -156,7 +159,8 @@ class ServerState:
             emit_prefill_stats=bool(getattr(req, "stream", False)),
         )
 
-    def prompt_tokens_for_chat(self, messages: List[dict], template_kwargs: dict):
+    def prompt_tokens_for_chat(self, messages: List[dict], template_kwargs: dict,
+                               tools_schema: Optional[List[dict]] = None):
         """Token ids for the request, or (with images) the full processor
         inputs dict. Raises HTTPException(400) when images arrive but the
         checkpoint has no vision tower."""
@@ -192,6 +196,8 @@ class ServerState:
             rendered = self.tokenizer.apply_chat_template(flat, tokenize=False, **kwargs)
             prepared = self.vision_processor.prepare(rendered, image_urls)
             return prepared
+        if tools_schema:
+            kwargs["tools"] = tools_schema
         return self.tokenizer.apply_chat_template(flat, **kwargs)
 
     def slot_acquire(self) -> "SlotHandle":
@@ -291,6 +297,12 @@ def _make_reasoning_feed(split_enabled: bool):
 
     feed.flush = flush
     return feed
+
+
+def _tools_enabled(state: "ServerState", req) -> bool:
+    if getattr(req, "tools", None) is not None:
+        return bool(req.tools)
+    return bool(getattr(state.args, "tools", False))
 
 
 def _log_request(params: GenParams, final: Step):
@@ -414,6 +426,7 @@ def create_app(state: ServerState) -> FastAPI:
             "has_chat_template": state.tokenizer.has_chat_template,
             "reasoning_format": a.reasoning_format,
             "moe_expansion": moe,
+            "tools": state.tools.names() if state.tools else [],
             "agrimlxo_version": __version__,
             "server": "AgrimlxO",
         }
@@ -508,25 +521,60 @@ def create_app(state: ServerState) -> FastAPI:
             slot.release()
             raise
 
-    async def _chat_once(state, req, tokens, params, slot, split_enabled, images=None):
+    async def _chat_once(state, req, tokens, params, slot, split_enabled, images=None, messages=None, template_kwargs=None):
         rid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-        feed = _make_reasoning_feed(split_enabled)
         content = ""
         reasoning = ""
         final: Optional[Step] = None
+        msgs = list(messages or [])
         try:
-            async for step, is_final in _run_generation(
-                state, tokens, params, slot.id, images
-            ):
-                if is_final:
-                    final = step
+            for _tool_iter in range(3):
+                feed = _make_reasoning_feed(split_enabled)
+                phase_content = ""
+                async for step, is_final in _run_generation(
+                    state, tokens, params, slot.id, images
+                ):
+                    if is_final:
+                        final = step
+                        break
+                    c, r = feed(step.text)
+                    phase_content += c
+                    reasoning += r
+                c, r = feed.flush()
+                phase_content += c
+                content += phase_content
+
+                calls = (
+                    parse_tool_calls(phase_content)
+                    if state.tools and _tools_enabled(state, req)
+                    else []
+                )
+                if not calls:
                     break
-                c, r = feed(step.text)
-                content += c
-                reasoning += r
-            c, r = feed.flush()
-            content += c
-            reasoning += r
+                tool_text = "\n\n"
+                for call in calls:
+                    result = state.tools.execute(call["name"], call["arguments"])
+                    tool_text += (
+                        f"<tool_call>{json.dumps({'name': call['name'], 'arguments': call['arguments']})}</tool_call>\n"
+                        f"<tool_result>{result}</tool_result>\n\n"
+                    )
+                content += tool_text
+                msgs.append({"role": "assistant", "content": phase_content})
+                msgs.append({"role": "user", "content": tool_text})
+                tools_schema = (
+                    state.tools.openai_schema()
+                    if state.tools and _tools_enabled(state, req) else None
+                )
+                prepared = state.prompt_tokens_for_chat(
+                    msgs, template_kwargs or {}, tools_schema=tools_schema
+                )
+                if isinstance(prepared, dict):
+                    tokens = prepared["input_ids"]
+                    images = {"pixel_values": prepared["pixel_values"],
+                              "image_grid_thw": prepared["image_grid_thw"]}
+                else:
+                    tokens, images = prepared, None
+                final = None
         finally:
             _log_request(params, final)
             slot.release()
@@ -556,96 +604,130 @@ def create_app(state: ServerState) -> FastAPI:
             "usage": usage,
         }
 
-    async def _chat_stream(state, req, tokens, params, slot, split_enabled, images=None):
+    async def _chat_stream(state, req, tokens, params, slot, split_enabled,
+                           images=None, messages=None, template_kwargs=None):
         rid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-        feed = _make_reasoning_feed(split_enabled)
         created = int(time.time())
         include_usage = bool((req.stream_options or {}).get("include_usage"))
         final: Optional[Step] = None
+        msgs = list(messages or [])
         try:
-            async for step, is_final in _run_generation(
-                state, tokens, params, slot.id, images
-            ):
-                if is_final:
-                    final = step
-                    break
-                if step.token == -2:
-                    # prefill stats, before the first token: exact server numbers
-                    yield _sse(
-                        json.dumps(
-                            {
-                                "id": rid,
-                                "object": "chat.completion.chunk",
-                                "created": created,
-                                "model": state.model_name,
-                                "choices": [],
-                                "usage_partial": {
-                                    "prompt_tokens": step.prompt_tokens,
-                                    "prefill_ms": step.prefill_ms,
-                                    "prompt_tps": round(
-                                        step.prompt_tokens
-                                        / max(1e-6, (step.prefill_ms or 1) / 1000.0),
-                                        1,
-                                    ),
-                                },
-                            }
+            for _tool_iter in range(3):
+                feed = _make_reasoning_feed(split_enabled)
+                phase_content = ""
+                async for step, is_final in _run_generation(
+                    state, tokens, params, slot.id, images
+                ):
+                    if is_final:
+                        final = step
+                        break
+                    if step.token == -2:
+                        # prefill stats, before the first token
+                        yield _sse(
+                            json.dumps(
+                                {
+                                    "id": rid,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": state.model_name,
+                                    "choices": [],
+                                    "usage_partial": {
+                                        "prompt_tokens": step.prompt_tokens,
+                                        "prefill_ms": step.prefill_ms,
+                                        "prompt_tps": round(
+                                            step.prompt_tokens
+                                            / max(1e-6, (step.prefill_ms or 1) / 1000.0),
+                                            1,
+                                        ),
+                                    },
+                                }
+                            )
                         )
-                    )
-                    continue
-                c, r = feed(step.text)
+                        continue
+                    c, r = feed(step.text)
+                    phase_content += (c or "") + (r or "")
+                    if r:
+                        yield _sse(
+                            json.dumps(
+                                _chunk(
+                                    rid, created, state.model_name,
+                                    {"content": None, "reasoning_content": r},
+                                    experts=step.experts,
+                                    experts_mean=step.experts_mean,
+                                )
+                            )
+                        )
+                    if c:
+                        yield _sse(
+                            json.dumps(
+                                _chunk(
+                                    rid, created, state.model_name, {"content": c},
+                                    experts=step.experts,
+                                    experts_mean=step.experts_mean,
+                                )
+                            )
+                        )
+                    if not c and not r and step.experts is not None:
+                        yield _sse(
+                            json.dumps(
+                                _chunk(
+                                    rid, created, state.model_name, {},
+                                    experts=step.experts,
+                                    experts_mean=step.experts_mean,
+                                )
+                            )
+                        )
+                c, r = feed.flush()
+                phase_content += c
                 if r:
                     yield _sse(
                         json.dumps(
                             _chunk(
-                                rid,
-                                created,
-                                state.model_name,
+                                rid, created, state.model_name,
                                 {"content": None, "reasoning_content": r},
-                                experts=step.experts,
-                                experts_mean=step.experts_mean,
                             )
                         )
                     )
                 if c:
                     yield _sse(
-                        json.dumps(
-                            _chunk(
-                                rid,
-                                created,
-                                state.model_name,
-                                {"content": c},
-                                experts=step.experts,
-                                experts_mean=step.experts_mean,
-                            )
-                        )
+                        json.dumps(_chunk(rid, created, state.model_name, {"content": c}))
                     )
-                if not c and not r and step.experts is not None:
-                    yield _sse(
-                        json.dumps(
-                            _chunk(
-                                rid,
-                                created,
-                                state.model_name,
-                                {},
-                                experts=step.experts,
-                                experts_mean=step.experts_mean,
-                            )
-                        )
-                    )
-            c, r = feed.flush()
-            if r:
-                yield _sse(
-                    json.dumps(
-                        _chunk(
-                            rid, created, state.model_name,
-                            {"content": None, "reasoning_content": r},
-                        )
-                    )
+
+                # ---- tool phase-end: execute, feed back, loop ----
+                calls = (
+                    parse_tool_calls(phase_content)
+                    if state.tools and _tools_enabled(state, req)
+                    else []
                 )
-            if c:
+                if not calls:
+                    break
+                tool_text = "\n\n"
+                for call in calls:
+                    result = state.tools.execute(call["name"], call["arguments"])
+                    tool_text += (
+                        f"<tool_call>{json.dumps({'name': call['name'], 'arguments': call['arguments']})}</tool_call>\n"
+                        f"<tool_result>{result}</tool_result>\n\n"
+                    )
                 yield _sse(
-                    json.dumps(_chunk(rid, created, state.model_name, {"content": c}))
+                    json.dumps(_chunk(rid, created, state.model_name, {"content": tool_text}))
                 )
+                msgs.append({"role": "assistant", "content": phase_content})
+                msgs.append({"role": "user", "content": tool_text})
+                tools_schema = (
+                    state.tools.openai_schema()
+                    if state.tools and _tools_enabled(state, req) else None
+                )
+                prepared = state.prompt_tokens_for_chat(
+                    msgs, template_kwargs or {}, tools_schema=tools_schema
+                )
+                if isinstance(prepared, dict):
+                    tokens = prepared["input_ids"]
+                    images = {"pixel_values": prepared["pixel_values"],
+                              "image_grid_thw": prepared["image_grid_thw"]}
+                else:
+                    tokens, images = prepared, None
+                final = None
+
             yield _sse(
                 json.dumps(
                     _chunk(
