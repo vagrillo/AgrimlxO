@@ -31,7 +31,7 @@ class Args:
     repeat_last_n = 64
     presence_penalty = 0.0
     frequency_penalty = 0.0
-    seed = None
+    seed = 42  # deterministic sampling (random draws can hit the toy eos)
     reasoning_budget = 0
     reasoning_format = "auto"
 

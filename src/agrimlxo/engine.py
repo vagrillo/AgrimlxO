@@ -288,12 +288,36 @@ class Engine:
         prefill_ms = (t_prefill_done - t_start) * 1000.0
 
         try:
-            while True:
-                logits = logits[:, -1, :]
+            # ---- decode pipeline (mlx-lm style): queue the NEXT model step
+            # on the GPU before syncing the CURRENT token, so the CPU-side
+            # work (detokenization, streaming, checks) overlaps GPU decode.
+            def _sample(logits_full):
+                """Processors + sampler on the last-position logits; returns
+                the sampled token as a lazy array (no sync)."""
+                sliced = logits_full[:, -1, :]
                 for proc in logits_processors:
-                    logits = proc(tokens, logits)
-                logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-                tok = int(sampler(logprobs).item())
+                    sliced = proc(tokens, sliced)
+                logprobs = sliced - mx.logsumexp(sliced, axis=-1, keepdims=True)
+                return sampler(logprobs)
+
+            tok_arr = _sample(logits)
+            mx.async_eval(tok_arr)
+
+            steps_since_clear = 0
+            while True:
+                # queue the next model step with the current token as input:
+                # the cache advances by this token (lazily), so slot.tokens
+                # must grow to match once the token is synced
+                next_logits = self.model(tok_arr.reshape(1, 1), cache=caches)
+                pos0 = total
+                total += 1
+                steps_since_clear += 1
+
+                tok = int(tok_arr.item())  # sync CURRENT while GPU runs next
+                slot.tokens.append(tok)
+                if self.runtime is not None:
+                    self.runtime.note_tokens(1)
+                    self._moe_observability(pos0, total)
 
                 # reasoning budget: watch the think phase and inject the
                 # wrap-up once it exceeds the budget
@@ -326,6 +350,8 @@ class Engine:
                             generated=len(tokens),
                             finish_reason=None,
                         )
+                    tok_arr = _sample(logits)
+                    mx.async_eval(tok_arr)
                     continue
 
                 if tok in self.tokenizer.eos_token_ids and not params.ignore_eos:
@@ -356,9 +382,17 @@ class Engine:
                     )
                     break
 
-                logits = step_one(tok)
+                tok_arr = _sample(next_logits)
+                mx.async_eval(tok_arr)
+                if steps_since_clear >= 256 and hasattr(mx, "clear_cache"):
+                    mx.clear_cache()  # bound the allocator cache (mlx-lm does)
+                    steps_since_clear = 0
         except GeneratorExit:
-            # client aborted: the slot keeps its consistent prefix state
+            # client aborted mid-pipeline: a queued step may have advanced the
+            # cache one token past slot.tokens — drop the slot so the next
+            # request re-prefills instead of continuing from a stale state
+            slot.caches = None
+            slot.tokens = []
             if self.runtime is not None:
                 self.runtime.maybe_print_stats()
             raise
