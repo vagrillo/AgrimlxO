@@ -212,6 +212,84 @@ def test_mixed_quantize_roundtrip(tmp_path):
     assert again == toks_mixed
 
 
+def build_toy_model_quantized(tmp_path, bits: int = 4):
+    """A toy checkpoint quantized on disk like an mlx-community release
+    (uniform 4-bit with the router gate at 8-bit group 64) — exercises the
+    load-time nn.quantize path with mode passthrough."""
+    import json
+
+    import mlx.nn as nn
+    from mlx.utils import tree_flatten
+
+    src = build_toy_model(tmp_path)
+    loaded = LoadedModel(src)
+    model = loaded.model
+
+    config = json.loads((src / "config.json").read_text())
+    config["quantization"] = {
+        "group_size": 32,
+        "bits": bits,
+        "model.layers.0.mlp.gate": {"group_size": 64, "bits": 8},
+    }
+    nn.quantize(
+        model,
+        group_size=32,
+        bits=bits,
+        class_predicate=lambda p, m: (
+            {"group_size": 64, "bits": 8}
+            if p == "model.layers.0.mlp.gate"
+            else hasattr(m, "to_quantized")
+        ),
+    )
+    weights = dict(tree_flatten(model.parameters()))
+
+    d = tmp_path / "toy-quant"
+    d.mkdir()
+    mx.save_safetensors(str(d / "model.safetensors"), weights)
+    (d / "config.json").write_text(json.dumps(config))
+    return d
+
+
+def test_load_quantized_checkpoint(tmp_path):
+    """Regression: quantized checkpoints call SwitchLinear.to_quantized with
+    mode — the vendored class must accept it (found on a 6-bit Qwen3.5)."""
+    import mlx.nn as nn
+
+    d = build_toy_model_quantized(tmp_path)
+    loaded = LoadedModel(d)
+    sm = loaded.layers[0].mlp.switch_mlp
+    # to_quantized produced the vendored quantized switch linear (with mode)
+    assert type(sm.gate_proj).__name__ == "QuantizedSwitchLinear"
+    assert sm.gate_proj.mode == "affine"
+    assert type(sm.down_proj).__name__ == "QuantizedSwitchLinear"
+    gate0 = loaded.layers[0].mlp.gate
+    assert isinstance(gate0, nn.QuantizedLinear) and gate0.bits == 8
+    assert loaded.layers[1].mlp.gate.bits == 4  # uniform elsewhere
+
+    toks, r = greedy_tokens(d, n=4)
+    assert r == "length"
+    again, _ = greedy_tokens(d, n=4)
+    assert again == toks  # deterministic
+
+
+def test_load_quantized_checkpoint_with_expansion(tmp_path):
+    d = build_toy_model_quantized(tmp_path)
+    rt = MoERuntime(4, True, MoEExpansionConfig(max_experts=8, threshold=0.0))
+    rt.setup(True, 2, 8)
+    loaded = LoadedModel(d, expansion=rt)
+    x = mx.array([PROMPT])
+    out = loaded.model(x, cache=loaded.make_cache())
+    mx.eval(out)
+    assert np.isfinite(np.array(out)).all()
+    # T=0 keeps exactly N experts per token through the quantized switch_mlp
+    counts = [
+        mx.concatenate([c.reshape(-1) for c in st.counts]) for st in rt._stats.values()
+    ]
+    all_counts = mx.concatenate(counts)
+    mx.eval(all_counts)
+    assert float(all_counts.mean()) == 8.0
+
+
 def test_mixed_model_with_expansion(tmp_path):
     """Expansion and mixed quantization compose: rank-ordered top-N selection
     routes through the mixed groups."""

@@ -534,14 +534,14 @@ class MoERuntime:
 # (block_count, expert_count, expert_count_used) -> profile, matched on the
 # GGUF/HF metadata like AgrillaMoE's launcher does.
 _PROFILES: Dict[Tuple[int, int, int], Dict] = {
-    # Qwen3.6-35B-A3B: 40 layers, 256 experts, top-8 — the profile used in the
-    # benchmarks (GPQA-Diamond: 84.34% expanded vs 81.82% stock top-8).
+    # Qwen3.5/3.6-35B-A3B: 40 layers, 256 experts, top-8 — the profile used
+    # in the benchmarks (GPQA-Diamond: 84.34% expanded vs 81.82% stock top-8).
     (40, 256, 8): {
         "max_experts": 20,
         "threshold": 0.80,
         "layer_start": 25,
         "layer_end": 39,
-        "name": "Qwen3.6-35B-A3B",
+        "name": "Qwen3.5/3.6-35B-A3B",
     },
 }
 
