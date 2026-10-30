@@ -26,6 +26,11 @@ from .sampler import make_sampler, make_logits_processors
 from .tokenizer import Tokenizer
 
 
+class ContextOverflowError(ValueError):
+    """Prompt + max_tokens do not fit the context: the server turns this
+    into a friendly 400 for the client instead of an ASGI crash."""
+
+
 @dataclass
 class GenParams:
     """Per-request sampling and stopping parameters."""
@@ -65,6 +70,10 @@ class Step:
     # timings (only set on the final Step): prefill/decode wall time in ms
     prefill_ms: Optional[float] = None
     decode_ms: Optional[float] = None
+    # MoE expansion live observability: experts routed by the last token
+    # (mean over the expanded layers) and the running mean
+    experts: Optional[float] = None
+    experts_mean: Optional[float] = None
 
 
 # Margin before the reasoning budget at which the wrap-up is injected: leaves
@@ -195,15 +204,17 @@ class Engine:
         """Yield one Step per generated token (blocking; run in a worker
         thread)."""
         if params.max_tokens > 0 and len(prompt) + params.max_tokens > self.ctx_size:
-            raise ValueError(
-                f"requested {params.max_tokens} tokens plus a prompt of"
-                f" {len(prompt)} exceeds the context size of {self.ctx_size};"
-                " reduce the prompt or raise --ctx-size"
+            raise ContextOverflowError(
+                f"the request needs {len(prompt)} prompt tokens +"
+                f" {params.max_tokens} max_tokens = {len(prompt) + params.max_tokens},"
+                f" over the context of {self.ctx_size}. Reduce the prompt or the"
+                f" attachments, or raise --ctx-size (current default 131072)."
             )
         if len(prompt) >= self.ctx_size:
-            raise ValueError(
-                f"prompt of {len(prompt)} tokens exceeds the context size of"
-                f" {self.ctx_size}"
+            raise ContextOverflowError(
+                f"the prompt is {len(prompt)} tokens, over the context of"
+                f" {self.ctx_size}. Split the document or raise --ctx-size"
+                " (current default 131072)."
             )
 
         slot = self.slots[slot_id % len(self.slots)]
@@ -332,9 +343,11 @@ class Engine:
 
                 tok = int(tok_arr.item())  # sync CURRENT while GPU runs next
                 slot.tokens.append(tok)
+                exp_last = exp_mean = None
                 if self.runtime is not None:
                     self.runtime.note_tokens(1)
                     self._moe_observability(pos0, total)
+                    exp_last, exp_mean = self.runtime.token_stats()
 
                 # reasoning budget: watch the think phase and inject the
                 # wrap-up once it exceeds the budget
@@ -391,6 +404,8 @@ class Engine:
                     prompt_tokens=len(prompt),
                     generated=len(tokens),
                     finish_reason=None,
+                    experts=exp_last,
+                    experts_mean=exp_mean,
                 )
 
                 if stop_hit or len(tokens) >= max_gen or total >= self.ctx_size:

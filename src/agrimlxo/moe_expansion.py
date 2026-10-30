@@ -36,10 +36,12 @@ from __future__ import annotations
 import math
 import os
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import mlx.core as mx
+import numpy as np
 
 # Minimum kept-weight sum guard used by the llama.cpp implementation (2^-14).
 _RENORM_MIN = 6.103515625e-5
@@ -332,6 +334,13 @@ class MoERuntime:
         # warmup runs generation through the real model before the server
         # listens: suspend observability so the stats window stays clean
         self.suspended: bool = False
+        # lazy kept-count branches awaiting materialization (scheduled with
+        # async_eval by record()); drained by token_stats() once the decode
+        # sync guarantees their compute ran
+        self._lazy: deque = deque()
+        self._live_sum: float = 0.0  # kept-expert total over all layers/tokens
+        self._live_n: int = 0  # layer-call count backing _live_sum
+        self._live_last: Optional[float] = None  # mean over the last token's layers
 
     # -- setup ---------------------------------------------------------------
 
@@ -421,6 +430,7 @@ class MoERuntime:
         if self.suspended:
             return
         mx.async_eval(sel_count)
+        self._lazy.append((layer_idx, sel_count))
         st = self._stats.setdefault(layer_idx, _LayerStats())
         st.counts.append(sel_count)
         self._pending_tokens += sel_count.shape[0]
@@ -428,11 +438,44 @@ class MoERuntime:
             mx.async_eval(kept_ids)
             st.last_ids = kept_ids
 
+    def token_stats(self) -> Tuple[Optional[float], Optional[float]]:
+        """(experts of the last token, running mean) from materialized counts.
+
+        Called right after the decode sync on the engine thread: the branch
+        compute for previous steps has run (async_eval), so converting is
+        safe and cheap; anything still lazy is materialized here (same
+        thread that created it — no cross-stream hazard).
+        """
+        if not self.active:
+            return None, None
+        last_sum = 0.0
+        last_n = 0
+        while self._lazy:
+            _, cnt = self._lazy[0]
+            try:
+                vals = np.asarray(cnt, dtype=np.float32).reshape(-1)
+            except Exception:
+                break  # not materialized yet; retry on the next token
+            self._lazy.popleft()
+            last_sum += float(vals.sum())
+            last_n += len(vals)
+            self._live_sum += float(vals.sum())
+            self._live_n += len(vals)
+        if last_n:
+            self._live_last = last_sum / last_n
+        return self._live_last, (
+            self._live_sum / self._live_n if self._live_n else None
+        )
+
     def reset_stats(self):
         """Clear the observability window (e.g. after warmup)."""
         self._stats.clear()
         self._tokens_since_stats = 0
         self._pending_tokens = 0
+        self._lazy.clear()
+        self._live_sum = 0.0
+        self._live_n = 0
+        self._live_last = None
 
     def flush_log(self, positions: List[int]):
         """Write the buffered per-token kept-expert lists (JSONL record).

@@ -82,6 +82,26 @@ useful for smoke tests; the production target is Apple Silicon (Metal).
 
 ## The MoE expansion in one paragraph
 
+> **What makes AgrimlxO different from a generic MLX server:** this engine is
+> specialized for the Qwen3.x MoE family, and that lets you **choose how many
+> parameters every generated token actually activates**. In a sparse MoE the
+> routed experts ARE the parameters-per-token: with the expansion you raise
+> the routed budget (more experts → more active parameters → more capability)
+> or cut it (fewer experts → fewer active parameters → faster and lighter),
+> freely and at runtime, per layer range. The native top-K is just a default:
+> here it is a **dial for parameters-per-token**.
+>
+> ⚠ **But the dial has limits in both directions.** Set the experts too LOW
+> (aggressive pruning below what the model needs) and quality collapses fast:
+> hallucinations, wrong answers, broken syntax and runaway generations that
+> can end in repetition loops — the model literally loses the knowledge it
+> was routed away from. Set them too HIGH (very large budgets on top of the
+> native top-K) and the compute per token grows proportionally (~N/K of
+> native speed) while the extra low-ranked experts add more noise than
+> signal. The sweet spot for Qwen3.5/3.6-35B-A3B is 12–20 experts with the
+> adaptive threshold (0.75–0.80) on the late layers; **always measure per
+> model** with the paired protocol.
+
 Three knobs (all off → stock):
 
 1. **`--moe-experts N`** (or `--moe-experts-add N`): raise the routed-expert

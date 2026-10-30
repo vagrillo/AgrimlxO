@@ -87,8 +87,8 @@ def _add_serve_args(p: argparse.ArgumentParser):
     p.add_argument("--port", type=int, default=8080, help="port to listen on (default: 8080)")
     p.add_argument("--api-key", default=None, help="API key for authentication (Bearer)")
     p.add_argument(
-        "-c", "--ctx-size", type=int, default=32768,
-        help="total context size, split across slots (default: 32768)",
+        "-c", "--ctx-size", type=int, default=131072,
+        help="total context size, split across slots (default: 131072 = 128K)",
     )
     p.add_argument(
         "--parallel", type=int, default=1,

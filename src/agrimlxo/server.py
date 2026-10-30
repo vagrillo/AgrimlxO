@@ -32,7 +32,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from ._version import __version__
-from .engine import Engine, GenParams, Step, ThinkSplit
+from .engine import ContextOverflowError, Engine, GenParams, Step, ThinkSplit
 
 
 # -- request schemas (OpenAI-compatible subset) --------------------------------
@@ -223,6 +223,8 @@ async def _run_generation(
             for step in state.engine.generate(tokens, params, slot_id):
                 q.put(("step", step))
             q.put(("done", None))
+        except ContextOverflowError as e:
+            q.put(("overflow", str(e)))
         except Exception as e:
             q.put(("error", e))
 
@@ -236,6 +238,8 @@ async def _run_generation(
                 yield step, True
                 return
             yield step, False
+        elif kind == "overflow":
+            raise HTTPException(400, payload)
         elif kind == "error":
             raise payload
         else:
@@ -321,14 +325,20 @@ def _usage(
     return usage
 
 
-def _chunk(rid, created, model, delta, finish=None):
-    return {
+def _chunk(rid, created, model, delta, finish=None, experts=None, experts_mean=None):
+    chunk = {
         "id": rid,
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
     }
+    if experts is not None:
+        chunk["experts"] = {
+            "last": round(experts, 2),
+            "mean": round(experts_mean, 2) if experts_mean is not None else None,
+        }
+    return chunk
 
 
 # -- app factory ----------------------------------------------------------------
@@ -562,11 +572,37 @@ def create_app(state: ServerState) -> FastAPI:
                                 created,
                                 state.model_name,
                                 {"content": None, "reasoning_content": r},
+                                experts=step.experts,
+                                experts_mean=step.experts_mean,
                             )
                         )
                     )
                 if c:
-                    yield _sse(json.dumps(_chunk(rid, created, state.model_name, {"content": c})))
+                    yield _sse(
+                        json.dumps(
+                            _chunk(
+                                rid,
+                                created,
+                                state.model_name,
+                                {"content": c},
+                                experts=step.experts,
+                                experts_mean=step.experts_mean,
+                            )
+                        )
+                    )
+                if not c and not r and step.experts is not None:
+                    yield _sse(
+                        json.dumps(
+                            _chunk(
+                                rid,
+                                created,
+                                state.model_name,
+                                {},
+                                experts=step.experts,
+                                experts_mean=step.experts_mean,
+                            )
+                        )
+                    )
             c, r = feed.flush()
             if r:
                 yield _sse(
