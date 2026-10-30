@@ -258,10 +258,10 @@ textarea { resize: vertical; min-height: 64px; }
     <div class="switch"><span>Enabled</span><input type="checkbox" id="moe-enabled"></div>
     <div class="setting"><div class="row"><span>Max experts N (0 = stock)</span><span class="val" id="moe-n-v"></span></div>
       <input type="number" id="moe-n" min="0" step="1"></div>
-    <div class="setting"><div class="row"><span>Threshold T (0 = fixed N)</span><span class="val" id="moe-t-v"></span></div>
-      <input type="range" id="moe-t" min="0" max="10" step="0.05"></div>
-    <div class="setting"><div class="row"><span>Final decay D</span><span class="val" id="moe-d-v"></span></div>
-      <input type="range" id="moe-d" min="0.05" max="0.95" step="0.05"></div>
+    <div class="setting"><div class="row">
+      <span style="flex:1">T <input type="number" id="moe-t" min="0" max="10" step="0.05" style="width:70px"></span>
+      <span style="flex:1">D <input type="number" id="moe-d" min="0.05" max="0.95" step="0.05" style="width:70px"></span>
+    </div></div>
     <div class="switch"><span>No decay</span><input type="checkbox" id="moe-nd"></div>
     <div class="setting"><div class="row"><span>Layer start (≥1 index, <1 fraction)</span></div>
       <input type="number" id="moe-ls" step="1"></div>
@@ -914,8 +914,8 @@ async function loadMoe(){
     if (!m.supported) { $("moestate").textContent = "model without a MoE runtime"; return; }
     $("moe-enabled").checked = m.active || m.reduce_active;
     $("moe-n").value = m.max_experts || 0; $("moe-n-v").textContent = m.max_experts || 0;
-    $("moe-t").value = m.threshold; $("moe-t-v").textContent = m.threshold;
-    $("moe-d").value = m.decay_end; $("moe-d-v").textContent = m.decay_end;
+    $("moe-t").value = m.threshold;
+    $("moe-d").value = m.decay_end;
     $("moe-nd").checked = m.no_decay;
     $("moe-ls").value = m.layer_start; $("moe-le").value = m.layer_end;
     $("moe-renorm").value = m.renorm;
