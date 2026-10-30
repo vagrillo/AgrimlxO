@@ -341,6 +341,22 @@ def _make_reasoning_feed(split_enabled: bool, start_inside: bool = False):
     return feed
 
 
+def _prompt_ends_inside_think(state: "ServerState", tokens: List[int]) -> bool:
+    """True when the prompt leaves a <think> block unclosed: the model will
+    emit the reasoning body (and the closing tag) without an opener."""
+    ts = state.tokenizer.think_start_id
+    te = state.tokenizer.think_end_id
+    if ts is None or not tokens:
+        return False
+    inside = False
+    for t in tokens:
+        if t == ts:
+            inside = True
+        elif t == te:
+            inside = False
+    return inside
+
+
 def _tools_enabled(state: "ServerState", req) -> bool:
     if getattr(req, "tools", None) is not None:
         return bool(req.tools)
@@ -574,7 +590,7 @@ def create_app(state: ServerState) -> FastAPI:
         msgs = list(messages or [])
         try:
             for _tool_iter in range(3):
-                start_inside = bool(tokens) and tokens[-1] == state.tokenizer.think_start_id
+                start_inside = _prompt_ends_inside_think(state, tokens)
                 feed = _make_reasoning_feed(split_enabled, start_inside)
                 phase_content = ""
                 async for step, is_final in _run_generation(
@@ -659,7 +675,7 @@ def create_app(state: ServerState) -> FastAPI:
         msgs = list(messages or [])
         try:
             for _tool_iter in range(3):
-                start_inside = bool(tokens) and tokens[-1] == state.tokenizer.think_start_id
+                start_inside = _prompt_ends_inside_think(state, tokens)
                 feed = _make_reasoning_feed(split_enabled, start_inside)
                 phase_content = ""
                 async for step, is_final in _run_generation(

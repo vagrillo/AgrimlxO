@@ -268,6 +268,17 @@ function renderMath(tex, display){
   return display ? `<div class="math-raw">${esc(tex)}</div>` : `<span class="math-raw">${esc(tex)}</span>`;
 }
 function renderMD(src){
+  // SVG → card rendered + pulsante sorgente (definita prima dell'uso)
+  const svgs = [];
+  const svgCard = (code) => {
+    svgs.push(
+      `<div class="svgcard"><div class="svghead"><span>🖼 SVG</span>` +
+      `<button class="svgtoggle" type="button">sorgente</button></div>` +
+      `<div class="svgview"><img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(code)}"></div>` +
+      `<pre>${esc(code)}</pre></div>`
+    );
+    return `\x00S${svgs.length-1}\x00`;
+  };
   const blocks = [];
   src = src.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const c = code.replace(/\n$/,"");
@@ -299,17 +310,7 @@ function renderMD(src){
   src = src.replace(/<tool_result>\s*([\s\S]*?)<\/tool_result>/gi, (_, r) =>
     pushCard("result", "↳ tool result", r.trim().slice(0, 2000)));
 
-  // SVG → card rendered + pulsante sorgente
-  const svgs = [];
-  const svgCard = (code) => {
-    svgs.push(
-      `<div class="svgcard"><div class="svghead"><span>🖼 SVG</span>` +
-      `<button class="svgtoggle" type="button">sorgente</button></div>` +
-      `<div class="svgview"><img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(code)}"></div>` +
-      `<pre>${esc(code)}</pre></div>`
-    );
-    return `\x00S${svgs.length-1}\x00`;
-  };
+  // SVG inline → card (svgCard è definita sopra)
   src = src.replace(/<svg[\s\S]*?<\/svg>/gi, m => svgCard(m));
   let h = esc(src);
   h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
