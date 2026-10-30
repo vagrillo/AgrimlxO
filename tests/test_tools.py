@@ -13,7 +13,7 @@ from agrimlxo.tools_registry import (
 
 def test_registry_loads_shipped_tools():
     reg = ToolRegistry(str(Path(__file__).parent.parent / "tools"))
-    assert set(reg.names()) >= {"get_datetime", "fetch_text", "web_search"}
+    assert set(reg.names()) >= {"get_datetime", "fetch_text", "web_search", "draw"}
     schema = reg.openai_schema()
     assert all(s["type"] == "function" for s in schema)
     assert {s["function"]["name"] for s in schema} >= {"get_datetime"}
