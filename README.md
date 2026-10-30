@@ -48,6 +48,9 @@ per model.
 
 ## Quick start (macOS)
 
+> 🧪 Manual Mac test plan (setup, per-parameter checks, kernels, mixed quant,
+> paired quality protocol): **[docs/mac-testing.md](docs/mac-testing.md)**
+
 ```bash
 # 1) install
 pip install .
