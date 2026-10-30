@@ -16,8 +16,8 @@ TOOL = {
     "name": "draw",
     "description": (
         "Call this when the user asks to draw something or generate an "
-        "image: you will receive the style skill to follow, then produce "
-        "the drawing as complete SVG code."
+        "image: you will receive a skill to follow in your reasoning "
+        "(plan the SVG there), then output the drawing as complete SVG code."
     ),
     "parameters": {
         "type": "object",
@@ -34,8 +34,14 @@ TOOL = {
 
 def run(subject: str = "", **kwargs) -> str:
     return (
-        f"{SKILL}\n\nOra disegna: {subject or 'il soggetto richiesto'}.\n"
-        "Answer ONLY with the complete SVG code (starting with <svg>)."
+        f"{SKILL}\n\n"
+        f"The user asked you to draw: {subject or 'the requested subject'}.\n\n"
+        "IMPORTANT - during your reasoning phase, plan the SVG you will "
+        "generate: decide the composition, the main shapes and their "
+        "positions, the color palette (bright colors) and the thick-line "
+        "outlining, element by element. Keep the SVG self-contained and "
+        "valid (viewBox included). After your reasoning, output ONLY the "
+        "complete SVG code (starting with <svg>) with no extra text."
     )
 
 
