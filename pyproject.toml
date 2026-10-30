@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agrimlxo"
+dynamic = ["version"]
+description = "Dedicated MLX inference server for Qwen3.x-35B MoE with runtime MoE expert expansion"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [{ name = "AgrimlxO contributors" }]
+keywords = [
+    "llm",
+    "mlx",
+    "apple-silicon",
+    "moe",
+    "mixture-of-experts",
+    "qwen3",
+    "inference",
+    "openai-api",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mlx>=0.29.0",
+    "transformers>=4.57",
+    "huggingface-hub>=0.34",
+    "numpy>=1.24",
+    "fastapi>=0.108.0",
+    "uvicorn>=0.23.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+agrimlxo = "agrimlxo.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/vagrillo/AgrimlxO"
+Documentation = "https://github.com/vagrillo/AgrimlxO/tree/main/docs"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agrimlxo = ["webui/*.html"]
+
+[tool.setuptools.dynamic]
+version = { attr = "agrimlxo._version.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

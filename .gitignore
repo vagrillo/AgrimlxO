@@ -1,0 +1,31 @@
+# reference clones (not part of the AgrimlxO repository)
+/AgrillaMoE/
+/omlx/
+
+# private project notes (user instructions + upstream fork doc kept local)
+leggimi.txt
+/moe-expansion.md
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# model artifacts
+*.safetensors
+*.gguf
+models/
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/
+*.swp
