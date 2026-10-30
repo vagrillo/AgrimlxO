@@ -111,11 +111,23 @@ class ServerState:
 
             m = engine.loaded.model
             vcfg = getattr(m.args, "vision_config", None) or {}
-            self.vision_processor = VisionProcessor(
-                engine.loaded.path,
-                image_token_id=getattr(m.args, "image_token_id", None),
-                spatial_merge_size=int(vcfg.get("spatial_merge_size", 2)),
-            )
+            try:
+                self.vision_processor = VisionProcessor(
+                    engine.loaded.path,
+                    image_token_id=getattr(m.args, "image_token_id", None),
+                    spatial_merge_size=int(vcfg.get("spatial_merge_size", 2)),
+                )
+            except Exception as e:
+                # mai fatale: il server parte text-only con un messaggio chiaro
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "vision processor non disponibile (%s); il server parte"
+                    " text-only e le immagini risponderanno con un errore"
+                    " esplicito",
+                    e,
+                )
+                self.vision_processor = None
         self.active_slots: List[Optional[float]] = [None] * max(1, args.parallel)
         self.counters = {"requests": 0, "prompt_tokens": 0, "generated_tokens": 0}
 
@@ -197,6 +209,13 @@ class ServerState:
                 400,
                 f"{len(image_urls)} image(s) received but this checkpoint has"
                 " no vision tower (text-only model). Text attachments work.",
+            )
+        if image_urls and has_vision and self.vision_processor is None:
+            raise HTTPException(
+                400,
+                "le immagini sono supportate ma il processor non si e' caricato"
+                " su questo ambiente (serve torch/torchvision, oppure aggiorna"
+                " transformers). Il testo funziona normalmente.",
             )
         if image_urls and has_vision:
             rendered = self.tokenizer.apply_chat_template(flat, tokenize=False, **kwargs)

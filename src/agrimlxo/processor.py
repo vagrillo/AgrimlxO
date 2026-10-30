@@ -47,11 +47,26 @@ class VisionProcessor:
                 "AutoProcessor richiede torchvision (solo per il video): uso"
                 " il percorso manuale image-processor + tokenizer"
             )
-        from transformers import AutoImageProcessor, AutoTokenizer
+        import json as _json
+
+        import transformers
+        from transformers import AutoTokenizer
 
         self.processor = None
         self.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-        self.image_processor = AutoImageProcessor.from_pretrained(str(model_path))
+        # instantiate the SLOW image-processor class directly: Auto maps to
+        # the torch/torchvision "Fast" variant and refuses without torch
+        cfg_path = Path(model_path) / "preprocessor_config.json"
+        cls_name = "Qwen2VLImageProcessor"
+        kwargs = {}
+        if cfg_path.exists():
+            pcfg = _json.loads(cfg_path.read_text())
+            cls_name = pcfg.get("image_processor_type", cls_name)
+            kwargs = {k: v for k, v in pcfg.items() if k != "image_processor_type"}
+        cls = getattr(transformers, cls_name, None)
+        if cls is None:
+            cls = getattr(transformers, "Qwen2VLImageProcessor")
+        self.image_processor = cls(**kwargs)
         self.mode = "manual"
 
     def prepare(
