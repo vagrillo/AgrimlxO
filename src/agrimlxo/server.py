@@ -19,6 +19,7 @@ bookkeeping mirrors llama.cpp's /slots.
 import asyncio
 import json
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -249,6 +250,32 @@ def _make_reasoning_feed(split_enabled: bool):
     return feed
 
 
+def _log_request(params: GenParams, final: Step):
+    """One console line per completed request: engine timings + sampling
+    params, so the server's own stderr tells the whole story."""
+    if final is None:
+        return
+    prefill = (
+        f"prefill {final.prompt_tokens} tok in {final.prefill_ms:.0f} ms"
+        f" ({final.prompt_tokens / max(1e-6, final.prefill_ms / 1000):.0f} tok/s)"
+        if final.prefill_ms
+        else "prefill n/a"
+    )
+    decode = (
+        f"decode {final.generated} tok in {final.decode_ms / 1000:.1f} s"
+        f" ({final.generated / max(1e-6, final.decode_ms / 1000):.1f} tok/s)"
+        if final.decode_ms
+        else "decode n/a"
+    )
+    print(
+        f"req: {prefill} | {decode} | {final.finish_reason} |"
+        f" temp={params.temp} top_p={params.top_p} top_k={params.top_k}"
+        f" min_p={params.min_p} seed={params.seed}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _usage(
     prompt_tokens: int,
     generated: int,
@@ -439,6 +466,7 @@ def create_app(state: ServerState) -> FastAPI:
             content += c
             reasoning += r
         finally:
+            _log_request(params, final)
             slot.release()
 
         usage = _usage(
@@ -538,6 +566,7 @@ def create_app(state: ServerState) -> FastAPI:
         except GeneratorExit:
             raise
         finally:
+            _log_request(params, final)
             slot.release()
 
     # ---- raw completions ----

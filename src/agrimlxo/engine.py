@@ -430,10 +430,11 @@ class Engine:
 
     # -- warmup ---------------------------------------------------------------
 
-    def warmup(self, prompt_len: int = 16, gen_tokens: int = 4):
+    def warmup(self, prompt_len: int = 16, gen_tokens: int = 32):
         """Short dummy generation before serving: pays the Metal kernel
-        JIT / autotune / first-trace costs up front instead of on the first
-        user request. Expansion observability is suspended."""
+        JIT / autotune / first-trace costs up front, MEASURES the raw engine
+        decode speed (no client in the way) and logs memory. Expansion
+        observability is suspended."""
         rt = self.runtime
         if rt is not None:
             rt.suspended = True
@@ -445,17 +446,62 @@ class Engine:
             slot.caches = self.loaded.make_cache(self.cache_type)
             slot.tokens = []
             out = None
+            t0 = time.perf_counter()
             for cs in range(0, len(prompt), self.prefill_step_size):
                 chunk = prompt[cs : cs + self.prefill_step_size]
                 out = self.model(mx.array([chunk]), cache=slot.caches)
                 slot.tokens.extend(chunk)
                 if cs + self.prefill_step_size < len(prompt):
                     mx.eval(out)
+            mx.eval(out)
+            prefill_tps = prompt_len / max(1e-6, time.perf_counter() - t0)
+
+            # raw decode loop, greedy, no sampling chain, no streaming: the
+            # engine's own ceiling (mlx-lm-comparable)
+            t0 = time.perf_counter()
+            logits = out
             for _ in range(gen_tokens):
-                out = self.model(mx.array([[prompt[-1]]]), cache=slot.caches)
-                mx.eval(out)
+                logits = self.model(
+                    mx.argmax(logits[:, -1, :], axis=-1).reshape(1, 1),
+                    cache=slot.caches,
+                )
+            mx.eval(logits)
+            decode_s = time.perf_counter() - t0
+            decode_tps = gen_tokens / max(1e-6, decode_s)
+
+            # same loop WITH the webui-like sampler chain: isolates the
+            # sampling overhead per token
+            sampler = make_sampler(temp=0.8, top_p=0.95, min_p=0.05, top_k=40)
+            t0 = time.perf_counter()
+            for _ in range(gen_tokens):
+                sliced = logits[:, -1, :]
+                logprobs = sliced - mx.logsumexp(sliced, axis=-1, keepdims=True)
+                tok = sampler(logprobs).reshape(1, 1)
+                logits = self.model(tok, cache=slot.caches)
+            mx.eval(logits)
+            sampled_s = time.perf_counter() - t0
+            sampled_tps = gen_tokens / max(1e-6, sampled_s)
+
             slot.caches = None
             slot.tokens = []
+
+            info = {}
+            if hasattr(mx, "get_memory_info"):
+                try:
+                    mi = mx.get_memory_info()
+                    info = {
+                        "active_gb": round(mi.active / 1e9, 2),
+                        "cache_gb": round(mi.cache / 1e9, 2),
+                        "peak_gb": round(mi.peak / 1e9, 2),
+                    }
+                except Exception:
+                    pass
+            return {
+                "prefill_tps": round(prefill_tps, 1),
+                "decode_tps": round(decode_tps, 1),
+                "decode_sampled_tps": round(sampled_tps, 1),
+                "memory": info,
+            }
         finally:
             if rt is not None:
                 rt.suspended = False

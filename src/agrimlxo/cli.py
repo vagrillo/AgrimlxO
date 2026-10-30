@@ -357,8 +357,20 @@ def cmd_serve(args, argv: List[str]):
         if n:
             _log(f"speed: mx.compile applied to {n} FFN sub-calls")
     if not args.no_warmup:
-        engine.warmup()
-        _log("speed: warmup done")
+        w = engine.warmup()
+        mem = w.get("memory") or {}
+        _log(
+            "speed: warmup decode — greedy {g} tok/s | sampled {s} tok/s"
+            " (temp=0.8, top_p=0.95, top_k=40, min_p=0.05)".format(
+                g=w["decode_tps"], s=w.get("decode_sampled_tps")
+            )
+        )
+        _log(f"speed: warmup prefill — {w['prefill_tps']} tok/s")
+        if mem:
+            _log(
+                "memory: active {active_gb} GB, cache {cache_gb} GB,"
+                " peak {peak_gb} GB".format(**mem)
+            )
 
     run_server(args, engine, tokenizer)
 
