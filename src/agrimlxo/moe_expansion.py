@@ -454,7 +454,17 @@ class MoERuntime:
             _, cnt = self._lazy[0]
             try:
                 vals = np.asarray(cnt, dtype=np.float32).reshape(-1)
-            except Exception:
+            except Exception as e:
+                # non silenzioso: log una tantum — su Metal questo è il
+                # segnale di un problema di stream da correggere
+                if not getattr(self, "_drain_err_logged", False):
+                    self._drain_err_logged = True
+                    print(
+                        f"moe: live experts non disponibili (drain):"
+                        f" {type(e).__name__}: {e}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 break  # not materialized yet; retry on the next token
             self._lazy.popleft()
             last_sum += float(vals.sum())
