@@ -196,7 +196,7 @@ textarea { resize: vertical; min-height: 64px; }
 </head>
 <body>
 <header>
-  <button class="icon" id="histbtn" title="cronologia chat">🕘</button>
+  <button class="icon" id="histbtn" title="chat history">🕘</button>
   <div id="dot" title="server"></div>
   <div class="logo">Agriml<span>xO</span></div>
   <span class="badge" id="modelbadge">loading…</span>
@@ -204,17 +204,17 @@ textarea { resize: vertical; min-height: 64px; }
   <div class="spacer"></div>
   <button class="icon" id="themeswitch" title="tema">◐</button>
   <button class="icon" id="moebtn" title="MoE expansion runtime" style="font-weight:700">MOE</button>
-  <button class="icon" id="setbtn" title="impostazioni">⚙</button>
+  <button class="icon" id="setbtn" title="settings">⚙</button>
 </header>
 
 <div class="main">
   <aside id="history" class="hidden">
-    <button class="panel-btn" id="newchat">＋ Nuova chat</button>
-    <h3>Cronologia (sul client)</h3>
+    <button class="panel-btn" id="newchat">＋ New chat</button>
+    <h3>History (client-side)</h3>
     <div id="chatlist"></div>
     <div class="hist-hint" id="histhint" style="display:none">
-      Nessuna chat salvata. Le conversazioni restano in questo browser (localStorage):
-      clic su una voce per riprendere dove eri.
+      No saved chats yet. Conversations stay in this browser (localStorage):
+      click an entry to resume where you left off.
     </div>
   </aside>
 
@@ -243,36 +243,36 @@ textarea { resize: vertical; min-height: 64px; }
     <div class="setting"><div class="row"><span>Budget (0 = off)</span><span class="val" id="rb-v"></span></div>
       <input type="number" id="rb" min="0" step="256"></div>
     <h3>Tools</h3>
-    <div class="switch"><span>Abilita i tool (./tools/)</span><input type="checkbox" id="usetools"></div>
+    <div class="switch"><span>Enable tools (./tools/)</span><input type="checkbox" id="usetools"></div>
     <div class="moeinfo" id="toolsinfo">…</div>
     <h3>Server</h3>
     <div class="moeinfo" id="moeinfo">…</div>
     <h3>Seed</h3>
-    <div class="setting"><div class="row"><span>0 = casuale</span></div>
-      <input type="number" id="seed" min="0" step="1" placeholder="0 = casuale"></div>
+    <div class="setting"><div class="row"><span>0 = random</span></div>
+      <input type="number" id="seed" min="0" step="1" placeholder="0 = random"></div>
     <div class="moeinfo" id="moedefault">…</div>
   </aside>
 
   <aside id="moepanel" class="hidden">
     <h3>MoE expansion runtime</h3>
-    <div class="switch"><span>Abilitata</span><input type="checkbox" id="moe-enabled"></div>
-    <div class="setting"><div class="row"><span>Esperti max N (0 = stock)</span><span class="val" id="moe-n-v"></span></div>
+    <div class="switch"><span>Enabled</span><input type="checkbox" id="moe-enabled"></div>
+    <div class="setting"><div class="row"><span>Max experts N (0 = stock)</span><span class="val" id="moe-n-v"></span></div>
       <input type="number" id="moe-n" min="0" step="1"></div>
-    <div class="setting"><div class="row"><span>Soglia T (0 = fisso N)</span><span class="val" id="moe-t-v"></span></div>
+    <div class="setting"><div class="row"><span>Threshold T (0 = fixed N)</span><span class="val" id="moe-t-v"></span></div>
       <input type="range" id="moe-t" min="0" max="10" step="0.05"></div>
-    <div class="setting"><div class="row"><span>Decay finale D</span><span class="val" id="moe-d-v"></span></div>
+    <div class="setting"><div class="row"><span>Final decay D</span><span class="val" id="moe-d-v"></span></div>
       <input type="range" id="moe-d" min="0.05" max="0.95" step="0.05"></div>
-    <div class="switch"><span>Nessun decay</span><input type="checkbox" id="moe-nd"></div>
-    <div class="setting"><div class="row"><span>Layer inizio (≥1 idx, <1 fraz.)</span></div>
+    <div class="switch"><span>No decay</span><input type="checkbox" id="moe-nd"></div>
+    <div class="setting"><div class="row"><span>Layer start (≥1 index, <1 fraction)</span></div>
       <input type="number" id="moe-ls" step="1"></div>
-    <div class="setting"><div class="row"><span>Layer fine (−1 = ultimo)</span></div>
+    <div class="setting"><div class="row"><span>Layer end (−1 = last)</span></div>
       <input type="number" id="moe-le" step="1"></div>
     <div class="setting"><div class="row"><span>Renorm</span></div>
       <select id="moe-renorm"><option>auto</option><option>always</option><option>never</option></select></div>
-    <h3>Reduce (inverso)</h3>
-    <div class="setting"><div class="row"><span>Fattore X (0 = off)</span></div>
+    <h3>Reduce (inverse)</h3>
+    <div class="setting"><div class="row"><span>Factor X (0 = off)</span></div>
       <input type="number" id="moe-rf" min="0" step="0.05"></div>
-    <button class="panel-btn" id="moe-apply">Applica al runtime</button>
+    <button class="panel-btn" id="moe-apply">Apply to runtime</button>
     <div class="moeinfo" id="moestate">…</div>
   </aside>
 </div>
@@ -280,11 +280,11 @@ textarea { resize: vertical; min-height: 64px; }
 <div id="composer">
   <div id="attachstrip"></div>
   <div class="composer-box">
-    <button id="attach" title="allega immagini, PDF o testo">📎</button>
+    <button id="attach" title="attach images, PDFs or text">📎</button>
     <input type="file" id="fileinput" multiple style="display:none"
            accept="image/png,image/jpeg,image/webp,application/pdf,.txt,.md,.csv,.json,.py,.js,.html,.xml,.log">
-    <textarea id="input" rows="1" placeholder="Scrivi un messaggio… (Invio per inviare, Maiusc+Invio per andare a capo)"></textarea>
-    <button id="send">Invia</button>
+    <textarea id="input" rows="1" placeholder="Type a message… (Enter to send, Shift+Enter for a newline)"></textarea>
+    <button id="send">Send</button>
   </div>
   <div class="hint" id="hint"></div>
 </div>
@@ -306,7 +306,7 @@ function renderMD(src){
   const svgCard = (code) => {
     svgs.push(
       `<div class="svgcard"><div class="svghead"><span>🖼 SVG</span>` +
-      `<button class="svgtoggle" type="button">sorgente</button></div>` +
+      `<button class="svgtoggle" type="button">source</button></div>` +
       `<div class="svgview"><img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(code)}"></div>` +
       `<pre>${esc(code)}</pre></div>`
     );
@@ -403,10 +403,10 @@ async function fetchProps(){
       $("moeinfo").innerHTML = `MoE expansion <b>off</b> (routing stock top-${moe.native_top_k})`;
     }
     if (props.tools && props.tools.length) {
-      $("toolsinfo").innerHTML = "<b>" + props.tools.length + "</b> tool disponibili: " +
+      $("toolsinfo").innerHTML = "<b>" + props.tools.length + "</b> tools available: " +
         props.tools.map(t => `<b>${t}</b>`).join(", ");
     } else {
-      $("toolsinfo").innerHTML = "nessun tool in ./tools/ sul server";
+      $("toolsinfo").innerHTML = "no tools in ./tools/ on the server";
     }
     const d = props.default_generation_settings || {};
     const defaults = {temp: d.temperature, top_k: d.top_k, top_p: d.top_p, min_p: d.min_p, n_predict: d.n_predict, reasoning_budget: 0};
@@ -426,7 +426,7 @@ function addMsg(role, atts){
   const div = document.createElement("div");
   div.className = "msg " + role;
   const who = document.createElement("div"); who.className = "who";
-  who.textContent = role === "user" ? "Tu" : "Assistant";
+  who.textContent = role === "user" ? "You" : "Assistant";
   div.appendChild(who);
   if (atts && atts.length) {
     const a = document.createElement("div"); a.className = "atts";
@@ -446,7 +446,7 @@ function addMsg(role, atts){
   if (role === "assistant") {
     const acts = document.createElement("div"); acts.className = "msgacts";
     const re = document.createElement("button"); re.className = "regen";
-    re.title = "rigenera la risposta"; re.textContent = "🔄";
+    re.title = "regenerate this answer"; re.textContent = "🔄";
     re.onclick = () => regenerate(div);
     acts.appendChild(re);
     div.appendChild(acts);
@@ -459,7 +459,7 @@ function addMsg(role, atts){
 function addReasoning(msg){
   const r = document.createElement("div");
   r.className = "reasoning";
-  r.innerHTML = `<div class="lbl">💭 pensiero</div><div class="body" style="margin:0"></div>`;
+  r.innerHTML = `<div class="lbl">💭 thinking</div><div class="body" style="margin:0"></div>`;
   r.onclick = () => r.classList.toggle("collapsed");
   msg.div.insertBefore(r, msg.bubble);
   return r.querySelector(".body");
@@ -471,7 +471,7 @@ function wireSvgToggles(root){
     b.onclick = () => {
       const card = b.closest(".svgcard");
       card.classList.toggle("source");
-      b.textContent = card.classList.contains("source") ? "disegno" : "sorgente";
+      b.textContent = card.classList.contains("source") ? "drawing" : "source";
     };
   });
 }
@@ -508,16 +508,16 @@ function askPdfMode(file){
   return new Promise(resolve => {
     const bg = document.createElement("div"); bg.className = "modal-bg";
     bg.innerHTML = `<div class="modal"><h4>${esc(file.name)}</h4>` +
-      `<p>Come processare il PDF? Le immagini delle pagine usano la vision del` +
-      ` modello (res. 100 dpi, max 6 pagine); il testo entra nel contesto come testo.</p>` +
-      `<div class="btns"><button class="secondary" data-v="text">Testo</button>` +
-      `<button class="primary" data-v="images">Immagini pagine</button></div></div>`;
+      `<p>How should this PDF be processed? Page images use the model's` +
+      ` vision (100 dpi, max 6 pages); text goes into the context as text.</p>` +
+      `<div class="btns"><button class="secondary" data-v="text">Text</button>` +
+      `<button class="primary" data-v="images">Page images</button></div></div>`;
     bg.querySelectorAll("button").forEach(b => b.onclick = () => { bg.remove(); resolve(b.dataset.v); });
     document.body.appendChild(bg);
   });
 }
 async function pdfToPageImages(file, maxPages = 6, dpi = 100){
-  if (!window.pdfjsLib) throw new Error("pdf.js non caricato (serve connessione al CDN)");
+  if (!window.pdfjsLib) throw new Error("pdf.js not loaded (CDN connection required)");
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
   const buf = await file.arrayBuffer();
@@ -531,13 +531,13 @@ async function pdfToPageImages(file, maxPages = 6, dpi = 100){
     canvas.width = vp.width; canvas.height = vp.height;
     await page.render({canvasContext: canvas.getContext("2d"), viewport: vp}).promise;
     attachments.push({
-      kind: "image", name: `${file.name} — pag. ${p}/${pdf.numPages}`,
+      kind: "image", name: `${file.name} — page ${p}/${pdf.numPages}`,
       dataUrl: canvas.toDataURL("image/png"),
     });
   }
 }
 async function extractPdfText(file){
-  if (!window.pdfjsLib) throw new Error("pdf.js non caricato (serve connessione al CDN)");
+  if (!window.pdfjsLib) throw new Error("pdf.js not loaded (CDN connection required)");
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
   const buf = await file.arrayBuffer();
@@ -550,7 +550,7 @@ async function extractPdfText(file){
     out += content.items.map(i => i.str).join(" ") + "\n\n";
   }
   out = out.slice(0, 80000);  // keep the context bounded
-  return out || "(PDF senza testo estraibile)";
+  return out || "(PDF with no extractable text)";
 }
 function renderAttachStrip(){
   const s = $("attachstrip");
@@ -661,7 +661,7 @@ async function send(){
   const imageAtts = attachments.filter(a => a.kind === "image");
   const docAtts = attachments.filter(a => a.kind === "doc");
   for (const d of docAtts) {
-    text = `[Allegato: ${d.name}]\n\`\`\`\n${d.text}\n\`\`\`\n\n` + text;
+    text = `[Attachment: ${d.name}]\n\`\`\`\n${d.text}\n\`\`\`\n\n` + text;
   }
   const storedAtts = attachments.map(a => a.kind === "image"
     ? {kind: "image", name: a.name, dataUrl: a.dataUrl}
@@ -679,7 +679,7 @@ async function send(){
 
   history.push(userEntry);
   const um = addMsg("user", storedAtts);
-  um.bubble.textContent = text || "(allegati)";
+  um.bubble.textContent = text || "(attachments)";
   // fase di generazione (usata da send e da rigenera)
   await streamAssistant(null);
 }
@@ -797,7 +797,7 @@ async function streamAssistant(apiContent){
     if (e.name !== "AbortError") {
       msg.bubble.innerHTML = `<span style="color:#dc2626">⚠ ${esc(String(e.message || e))}</span>`;
     } else {
-      msg.bubble.innerHTML = contentHTML + ' <span class="meta">[interrotto]</span>';
+      msg.bubble.innerHTML = contentHTML + ' <span class="meta">[stopped]</span>';
       if (contentRaw) {
         const assistantEntry = {role: "assistant", content: contentRaw};
         if (reasoningRaw) assistantEntry.reasoning = reasoningRaw;
@@ -863,7 +863,7 @@ document.addEventListener("visibilitychange", () => {
 function setSend(){
   const b = $("send");
   if (generating) { b.textContent = "Stop"; b.classList.add("stop"); }
-  else { b.textContent = "Invia"; b.classList.remove("stop"); }
+  else { b.textContent = "Send"; b.classList.remove("stop"); }
 }
 
 // ---------- wiring ----------
@@ -911,7 +911,7 @@ $("moebtn").addEventListener("click", async () => {
 async function loadMoe(){
   try {
     const m = await (await fetch("/moe")).json();
-    if (!m.supported) { $("moestate").textContent = "modello senza runtime MoE"; return; }
+    if (!m.supported) { $("moestate").textContent = "model without a MoE runtime"; return; }
     $("moe-enabled").checked = m.active || m.reduce_active;
     $("moe-n").value = m.max_experts || 0; $("moe-n-v").textContent = m.max_experts || 0;
     $("moe-t").value = m.threshold; $("moe-t-v").textContent = m.threshold;
@@ -922,7 +922,7 @@ async function loadMoe(){
     $("moe-rf").value = m.reduce_factor || 0;
     $("moestate").innerHTML = `attiva: <b>${m.active}</b> · top-k nativo ${m.native_top_k}` +
       (m.reduce_active ? ` · reduce ${m.reduce_factor}` : "");
-  } catch(e) { $("moestate").textContent = "errore: " + e; }
+  } catch(e) { $("moestate").textContent = "error: " + e; }
 }
 $("moe-apply").addEventListener("click", async () => {
   const body = {
@@ -939,7 +939,7 @@ $("moe-apply").addEventListener("click", async () => {
   const r = await fetch("/moe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
   const j = await r.json();
   $("moestate").innerHTML = r.ok
-    ? `applicata ✓ attiva: <b>${j.active}</b> · budget ${j.n}`
+    ? `applied ✓ attiva: <b>${j.active}</b> · budget ${j.n}`
     : `⚠ ${j.detail || "errore"}`;
   fetchProps();
 });

@@ -123,8 +123,8 @@ class ServerState:
 
                 self.vision_processor_error = f"{type(e).__name__}: {e}"
                 logging.getLogger(__name__).warning(
-                    "vision processor non disponibile (%s); il server parte"
-                    " text-only e le immagini risponderanno con un errore"
+                    "vision processor unavailable (%s); the server starts"
+                    " text-only and image requests fail with an explicit error"
                     " esplicito",
                     self.vision_processor_error,
                 )
@@ -219,10 +219,10 @@ class ServerState:
         if image_urls and has_vision and self.vision_processor is None:
             raise HTTPException(
                 400,
-                "processor vision non caricato su questo ambiente — motivo: "
+                "vision processor not loaded on this environment — reason: "
                 + str(getattr(self, "vision_processor_error", "sconosciuto"))
-                + " | rimedi: pip install torchvision (abilita il processor"
-                " completo) oppure incolla questo messaggio",
+                + " | fix: pip install torchvision (enables the full processor"
+                " ), or paste this message",
             )
         if image_urls and has_vision:
             rendered = self.tokenizer.apply_chat_template(flat, tokenize=False, **kwargs)

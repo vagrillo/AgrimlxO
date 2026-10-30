@@ -6,12 +6,12 @@ import urllib.request
 
 TOOL = {
     "name": "fetch_text",
-    "description": "Scarica una pagina web (URL) e ritorna il solo testo, senza tag HTML.",
+    "description": "Fetches a web page (URL) and returns its text only, without HTML tags.",
     "parameters": {
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "URL http(s) della pagina"},
-            "max_chars": {"type": "integer", "description": "tronca il testo a N caratteri (default 8000)"},
+            "max_chars": {"type": "integer", "description": "truncates the text to N characters (default 8000)"},
         },
         "required": ["url"],
     },
@@ -24,7 +24,7 @@ _WS = re.compile(r"\n{3,}")
 
 def run(url: str = "", max_chars: int = 8000, **kwargs) -> str:
     if not url:
-        return "errore: url mancante"
+        return "error: missing url"
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (AgrimlxO tool)"}
     )

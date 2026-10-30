@@ -5,7 +5,7 @@ from datetime import datetime
 
 TOOL = {
     "name": "get_datetime",
-    "description": "Ritorna la data e l'ora esatte correnti del server (locale).",
+    "description": "Returns the server's current local date and time.",
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 

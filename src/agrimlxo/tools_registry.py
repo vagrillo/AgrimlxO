@@ -68,13 +68,13 @@ class ToolRegistry:
     def execute(self, name: str, arguments: Any) -> str:
         tool = self.tools.get(name)
         if tool is None:
-            return f"errore: tool '{name}' inesistente (disponibili: {self.names()})"
+            return f"error: unknown tool '{name}' (available: {self.names()})"
         try:
             args = json.loads(arguments) if isinstance(arguments, str) else (arguments or {})
             result = tool["run"](**args)
             return str(result)
         except Exception as e:
-            return f"errore eseguendo {name}: {e}"
+            return f"error running {name}: {e}"
 
 
 # ---- parsing of the model's <tool_call> blocks (Qwen3 format) ----------------

@@ -460,7 +460,7 @@ class MoERuntime:
                 if not getattr(self, "_drain_err_logged", False):
                     self._drain_err_logged = True
                     print(
-                        f"moe: live experts non disponibili (drain):"
+                        f"moe: live experts unavailable (drain):"
                         f" {type(e).__name__}: {e}",
                         file=sys.stderr,
                         flush=True,
@@ -484,12 +484,12 @@ class MoERuntime:
         geometry captured at setup and swaps the per-call parameters; returns
         the new banner lines. Raises ValueError on invalid input."""
         if self.k_native <= 0:
-            raise ValueError("runtime non inizializzato")
+            raise ValueError("runtime not initialized")
         cfg = config or MoEExpansionConfig()
         red = reduce if reduce is not None else self.reduce
         if red.factor > 0.0 and cfg.requested:
             raise ValueError(
-                "--moe-reduce e l'espansione sono mutuamente esclusivi"
+                "--moe-reduce and the expansion are mutually exclusive"
             )
         n = cfg.resolve_n(self.k_native, self.n_expert) if cfg.requested else 0
         resolved = validate_expansion(

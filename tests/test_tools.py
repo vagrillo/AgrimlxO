@@ -27,7 +27,7 @@ def test_get_datetime_runs():
 
 def test_execute_missing_and_bad_json():
     reg = ToolRegistry(str(Path(__file__).parent.parent / "tools"))
-    assert "inesistente" in reg.execute("nope", "{}")
+    assert "unknown tool" in reg.execute("nope", "{}")
     assert "errore" in reg.execute("get_datetime", "{bad json").lower() or reg.execute(
         "get_datetime", "{bad json"
     )
