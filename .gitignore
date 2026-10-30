@@ -19,10 +19,10 @@ venv/
 .coverage
 htmlcov/
 
-# model artifacts
+# model artifacts (repo root only — do NOT catch src/agrimlxo/models/)
 *.safetensors
 *.gguf
-models/
+/models/
 
 # editors / os
 .DS_Store
