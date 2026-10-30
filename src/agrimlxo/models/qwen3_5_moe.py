@@ -633,10 +633,13 @@ class Model(nn.Module):
     def run_vision(
         self, pixel_values: mx.array, image_grid_thw: Optional[mx.array]
     ) -> mx.array:
-        """Image patches -> [n_image_tokens, hidden_size] features."""
-        dtype = self.language_model.model.embed_tokens.weight.dtype
+        """Image patches -> [n_image_tokens, hidden_size] features.
+
+        The tower runs in float32: the embed_tokens weight dtype of a
+        quantized checkpoint is uint32 (packed) and conv3d refuses it. The
+        caller casts the features to the activation dtype after."""
         hidden, _ = self.vision_tower(
-            pixel_values.astype(dtype), image_grid_thw
+            pixel_values.astype(mx.float32), image_grid_thw
         )
         return hidden
 
@@ -744,6 +747,7 @@ class Model(nn.Module):
             if pixel_values is not None:
                 embeds = self.language_model.model.embed_tokens(inputs)
                 features = self.run_vision(pixel_values, image_grid_thw)
+                features = features.astype(embeds.dtype)
                 input_embeddings = self.splice_image_features(
                     features, embeds, inputs, self.args.image_token_id
                 )

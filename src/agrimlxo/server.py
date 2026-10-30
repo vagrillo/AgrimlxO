@@ -788,6 +788,22 @@ def create_app(state: ServerState) -> FastAPI:
                         }
                     )
                 )
+        except ContextOverflowError as e:
+            yield _sse(
+                json.dumps(_chunk(rid, created, state.model_name,
+                                  {"content": f"⚠ {e}"}))
+            )
+            yield _sse(
+                json.dumps(_chunk(rid, created, state.model_name, {}, finish="error"))
+            )
+        except Exception as e:
+            yield _sse(
+                json.dumps(_chunk(rid, created, state.model_name,
+                                  {"content": f"⚠ errore motore: {e}"}))
+            )
+            yield _sse(
+                json.dumps(_chunk(rid, created, state.model_name, {}, finish="error"))
+            )
         except GeneratorExit:
             raise
         finally:
