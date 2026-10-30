@@ -270,11 +270,18 @@ async def _run_generation(
     loop = asyncio.get_running_loop()
     q: "queue.Queue" = queue.Queue()
 
+    cancel = threading.Event()
+
     def run():
+        gen = state.engine.generate(tokens, params, slot_id, images)
         try:
-            for step in state.engine.generate(tokens, params, slot_id, images):
+            for step in gen:
+                if cancel.is_set():
+                    gen.close()  # GeneratorExit dentro il motore: slot invalidata
+                    break
                 q.put(("step", step))
-            q.put(("done", None))
+            else:
+                q.put(("done", None))
         except ContextOverflowError as e:
             q.put(("overflow", str(e)))
         except Exception as e:
@@ -282,23 +289,26 @@ async def _run_generation(
 
     threading.Thread(target=run, daemon=True).start()
 
-    while True:
-        kind, payload = await loop.run_in_executor(None, q.get)
-        if kind == "step":
-            step: Step = payload
-            if step.finish_reason is not None:
-                yield step, True
+    try:
+        while True:
+            kind, payload = await loop.run_in_executor(None, q.get)
+            if kind == "step":
+                step: Step = payload
+                if step.finish_reason is not None:
+                    yield step, True
+                    return
+                yield step, False
+            elif kind == "overflow":
+                raise HTTPException(400, payload)
+            elif kind == "error":
+                raise payload
+            else:
                 return
-            yield step, False
-        elif kind == "overflow":
-            raise HTTPException(400, payload)
-        elif kind == "error":
-            raise payload
-        else:
-            return
+    finally:
+        cancel.set()  # disconnessione/errore: fermare anche il pump thread
 
 
-def _make_reasoning_feed(split_enabled: bool):
+def _make_reasoning_feed(split_enabled: bool, start_inside: bool = False):
     """raw delta -> (content_delta, reasoning_delta); the returned callable
     also exposes flush() for the end of the stream."""
     if not split_enabled:
@@ -307,7 +317,7 @@ def _make_reasoning_feed(split_enabled: bool):
 
         passthrough.flush = lambda: ("", "")
         return passthrough
-    ts = ThinkSplit()
+    ts = ThinkSplit(start_inside=start_inside)
 
     def feed(raw: str):
         content, reasoning = "", ""
@@ -564,7 +574,8 @@ def create_app(state: ServerState) -> FastAPI:
         msgs = list(messages or [])
         try:
             for _tool_iter in range(3):
-                feed = _make_reasoning_feed(split_enabled)
+                start_inside = bool(tokens) and tokens[-1] == state.tokenizer.think_start_id
+                feed = _make_reasoning_feed(split_enabled, start_inside)
                 phase_content = ""
                 async for step, is_final in _run_generation(
                     state, tokens, params, slot.id, images
@@ -648,7 +659,8 @@ def create_app(state: ServerState) -> FastAPI:
         msgs = list(messages or [])
         try:
             for _tool_iter in range(3):
-                feed = _make_reasoning_feed(split_enabled)
+                start_inside = bool(tokens) and tokens[-1] == state.tokenizer.think_start_id
+                feed = _make_reasoning_feed(split_enabled, start_inside)
                 phase_content = ""
                 async for step, is_final in _run_generation(
                     state, tokens, params, slot.id, images
@@ -810,7 +822,7 @@ def create_app(state: ServerState) -> FastAPI:
                 json.dumps(_chunk(rid, created, state.model_name, {}, finish="error"))
             )
         except GeneratorExit:
-            raise
+            raise  # propaga a _run_generation, che ferma il pump via cancel
         finally:
             _log_request(params, final)
             slot.release()

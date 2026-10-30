@@ -95,8 +95,11 @@ class ThinkSplit:
     _OPEN = "<think>"
     _CLOSE = "</think>"
 
-    def __init__(self):
-        self.state = "outside"  # outside | inside | closed
+    def __init__(self, start_inside: bool = False):
+        # "inside" quando il prompt termina con <think> aperto: il template
+        # con enable_thinking apre il blocco e il modello emette solo il
+        # contenuto + </think>
+        self.state = "inside" if start_inside else "outside"
         self._tail = ""
 
     def push(self, text: str) -> List[Tuple[str, str]]:
