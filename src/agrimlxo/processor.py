@@ -41,7 +41,7 @@ class VisionProcessor:
             self.image_processor = None
             return
         except ImportError as e:
-            if "torchvision" not in str(e):
+            if "torchvision" not in str(e).lower():
                 raise
             logger.info(
                 "AutoProcessor richiede torchvision (solo per il video): uso"
