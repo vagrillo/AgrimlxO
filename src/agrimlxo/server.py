@@ -588,6 +588,10 @@ def create_app(state: ServerState) -> FastAPI:
             factor=float(body.get("reduce_factor", 0.0) or 0.0),
             layers=tuple(int(x) for x in rl.split("-")) if rl else rt.reduce.layers,
         )
+        if reduce.factor > 0.0 and enabled is not False:
+            # the panel manages both knobs: an active reduce means the user
+            # wants pruning — drop the expansion side instead of rejecting
+            cfg = MoEExpansionConfig()
         try:
             lines = rt.apply_config(cfg, reduce)
         except ValueError as e:
