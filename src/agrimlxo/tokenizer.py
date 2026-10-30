@@ -17,59 +17,71 @@ from transformers import AutoTokenizer
 
 
 class Detokenizer:
-    """Incremental detokenizer: decode the pending buffer, emit the stable
-    prefix, hold back anything that still looks like a split UTF-8 tail."""
+    """Incremental detokenizer: decode the pending token buffer, emit the
+    stable delta, hold back anything that still looks like a split UTF-8
+    tail.
+
+    Invariant: ``_pending`` holds only the tokens whose text has not been
+    emitted yet; ``_pending_decode`` is the last decode OF THAT BUFFER. The
+    emitted delta is the longest-common-prefix difference between the two
+    decodes of the same buffer — never a slice of the global text.
+    """
 
     def __init__(self, tokenizer):
         self._tokenizer = tokenizer
         self._pending: List[int] = []
-        self._pending_text = ""
+        self._pending_decode = ""  # decode of the current pending buffer
         self.text = ""  # full stable text emitted so far
 
     def reset(self):
         self._pending = []
-        self._pending_text = ""
+        self._pending_decode = ""
         self.text = ""
+
+    def _decode_pending(self) -> str:
+        try:
+            return self._tokenizer.decode(
+                self._pending, skip_special_tokens=True
+            )
+        except TypeError:
+            return self._tokenizer.decode(self._pending)
 
     def push(self, token: int) -> str:
         """Add one token, return the newly emitted text (may be empty)."""
         self._pending.append(int(token))
-        try:
-            new_text = self._tokenizer.decode(
-                self._pending, skip_special_tokens=True
-            )
-        except Exception:
-            new_text = self._tokenizer.decode(
-                self._pending, skip_special_tokens=True, errors="ignore"
-            )
+        new_text = self._decode_pending()
+
         # incomplete utf-8 tail: hold the bytes in the pending buffer
-        if new_text.endswith("\ufffd") and not self._pending_text.endswith("\ufffd"):
+        if new_text.endswith("\ufffd"):
             return ""
-        if len(new_text) < len(self._pending_text):
-            # decode shrank (rare): keep buffering
-            return ""
-        emitted = new_text[len(self._pending_text):]
-        if not emitted:
-            return ""
-        self._pending_text = new_text
-        self.text += emitted
-        self._pending = []
+
+        prev = self._pending_decode
+        # longest common prefix between the previous and new buffer decodes
+        common = 0
+        limit = min(len(prev), len(new_text))
+        while common < limit and prev[common] == new_text[common]:
+            common += 1
+        emitted = new_text[common:]
+
+        self._pending_decode = new_text
+        if emitted:
+            self.text += emitted
+            self._pending = []  # fully flushed
+            self._pending_decode = ""
         return emitted
 
     def finalize(self) -> str:
-        """Flush any held-back text (call at the end of generation)."""
+        """Flush any held-back text (call at the end of generation); returns
+        the remainder emitted now ("" when everything was already flushed)."""
+        rest = ""
         if self._pending:
-            try:
-                rest = self._tokenizer.decode(
-                    self._pending, skip_special_tokens=True
-                )
-            except Exception:
-                rest = ""
-            if rest and not rest.endswith("\ufffd"):
+            decoded = self._decode_pending()
+            if decoded and not decoded.endswith("\ufffd"):
+                rest = decoded
                 self.text += rest
-                self._pending_text += rest
             self._pending = []
-        return self.text
+            self._pending_decode = ""
+        return rest
 
 
 class Tokenizer:
