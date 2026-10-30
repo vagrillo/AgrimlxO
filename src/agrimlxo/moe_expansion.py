@@ -427,7 +427,12 @@ class MoERuntime:
         for idx, st in self._stats.items():
             if getattr(st, "last_ids", None) is None:
                 continue
-            ids = [list(map(int, row)) for row in st.last_ids]
+            ids_arr = st.last_ids
+            if ids_arr.ndim > 2:
+                ids_arr = ids_arr.reshape(-1, ids_arr.shape[-1])
+            elif ids_arr.ndim < 2:
+                ids_arr = ids_arr.reshape(-1, self.n if self.n else ids_arr.shape[-1])
+            ids = [[int(x) for x in row] for row in ids_arr]
             layers[str(idx)] = ids
             del st.last_ids
         if layers:

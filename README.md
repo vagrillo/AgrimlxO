@@ -153,6 +153,39 @@ src/agrimlxo/
 Details, invariants and vendoring notes:
 **[docs/architecture.md](docs/architecture.md)**.
 
+## Optional native kernels (Metal)
+
+The fused MoE routed weighted-sum kernel from omlx is vendored under
+`native/` and **generalized for the expansion**: the upstream kernel only
+accepted 6/8/10 routed experts per token, AgrimlxO's accepts any budget in
+`[2, 64]` (tiled kernels for 6/8/10/12/16/20/24/32, a runtime-topk dynamic
+kernel for the rest). Off by default — the fused sum reorders the fp
+accumulation vs the stock ops:
+
+```bash
+AGRIMLXO_WITH_KERNELS=1 pip install ./native   # build on the Mac
+agrimlxo serve -m <model> --fast-moe-prefill   # enable (or AGRIMLXO_FAST_MOE=1)
+```
+
+Missing kernels / ABI mismatch degrade to the stock MLX ops with one log
+line. Docs: **[docs/kernels.md](docs/kernels.md)**.
+
+## Per-expert mixed quantization (MixedQuant)
+
+Follow AgrillaMoE's expert-rank workflow on MLX checkpoints: rank the
+experts per layer (`--moe-expert-log` + `moe_predict.py`), then cut the
+cold tail to fewer bits while the hot experts keep 8:
+
+```bash
+agrimlxo mixed-quantize <model> --order expert-order.txt \
+    --top-m 64 --hi-bits 8 --lo-bits 4 --out model-mixed
+agrimlxo serve -m model-mixed --moe-experts 20 --moe-expert-threshold 0.8
+```
+
+`MixedSwitchGLU` loads the annotated layers natively and composes with the
+expansion. Memory-first trade-off (G× routed compute on mixed layers):
+**[docs/mixed-experts.md](docs/mixed-experts.md)**.
+
 ## Tests
 
 ```bash
@@ -160,12 +193,13 @@ pip install -e ".[dev]"
 pytest tests/
 ```
 
-The suite (50 tests, runs on the CPU backend too) pins the expansion
+The suite (61 tests, runs on the CPU backend too) pins the expansion
 post-pass against hand-derived golden values from the llama.cpp
 implementation (threshold cut, floor, decay endpoints, midpoint factor,
 renorm guards, per-token independence, 32-configuration sweep), checks
 flags-off == stock on a toy model end-to-end, KV-prefix-reuse equivalence,
-stop/context handling and the HTTP API.
+stop/context handling, the HTTP API, the expert log, the fast-path
+fallback and the mixed-quant roundtrip.
 
 ## Status & compatibility
 

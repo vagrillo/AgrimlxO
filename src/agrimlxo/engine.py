@@ -250,10 +250,12 @@ class Engine:
             for cs in range(0, len(segment), self.prefill_step_size):
                 chunk = segment[cs : cs + self.prefill_step_size]
                 out = self.model(mx.array([chunk]), cache=caches)
+                pos0 = total
                 total += len(chunk)
                 slot.tokens.extend(chunk)
                 if self.runtime is not None:
                     self.runtime.note_tokens(len(chunk))
+                    self._moe_observability(pos0, total)
                 if cs + self.prefill_step_size < len(segment):
                     mx.eval(out)
             return out
@@ -261,10 +263,12 @@ class Engine:
         def step_one(tok: int):
             nonlocal total
             out = self.model(mx.array([[tok]]), cache=caches)
+            pos0 = total
             total += 1
             slot.tokens.append(tok)
             if self.runtime is not None:
                 self.runtime.note_tokens(1)
+                self._moe_observability(pos0, total)
             return out
 
         logits = forward_chunked(prompt_left) if prompt_left else None
@@ -365,6 +369,20 @@ class Engine:
             generated=len(tokens),
             finish_reason=finish_reason,
         )
+
+    # -- MoE expansion observability ------------------------------------------
+
+    def _moe_observability(self, pos_start: int, pos_end: int):
+        """Periodic stats line (every stats-every processed tokens, like
+        LLAMA_MOE_EXPERT_STATS_EVERY) and the per-token kept-expert log when
+        --moe-expert-log is set. Cheap no-op unless the window is full."""
+        rt = self.runtime
+        if rt is None:
+            return
+        if rt.config.expert_log:
+            rt.flush_log(list(range(pos_start, pos_end)))
+        if rt.stats_every > 0:
+            rt.maybe_print_stats()
 
     # -- cache management ----------------------------------------------------
 

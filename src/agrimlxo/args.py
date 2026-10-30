@@ -56,6 +56,26 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- list ----
     ls = sub.add_parser("list", help="list locally available models")
     ls.add_argument("--models-dir", default=None, help="extra dir to scan for models")
+
+    # ---- mixed-quantize ----
+    mq = sub.add_parser(
+        "mixed-quantize",
+        help="build a per-expert mixed-quantization model (hot experts at high bits)",
+    )
+    mq.add_argument("model", help="source model directory (uniform quant or bf16)")
+    mq.add_argument("--out", required=True, help="output model directory")
+    mq.add_argument("--order", default=None,
+                    help="expert-order.txt: one line per layer, comma-separated expert ids"
+                         " ranked most-important first (from --moe-expert-log + moe_predict.py;"
+                         " default: natural expert order)")
+    mq.add_argument("--layers", default="0--1",
+                    help="MoE layers to convert: '25-39', '0--1' or '3,7,11' (default: all)")
+    mq.add_argument("--top-m", dest="top_m", type=int, default=32,
+                    help="number of hot experts per layer at the high bitrate (default: 32)")
+    mq.add_argument("--hi-bits", dest="hi_bits", type=int, default=8)
+    mq.add_argument("--lo-bits", dest="lo_bits", type=int, default=4)
+    mq.add_argument("--hi-group-size", dest="hi_group_size", type=int, default=64)
+    mq.add_argument("--lo-group-size", dest="lo_group_size", type=int, default=64)
     return p
 
 
@@ -158,6 +178,13 @@ def _add_serve_args(p: argparse.ArgumentParser):
     p.add_argument("--suggest-quant", action="store_true", default=False,
                    help="only suggest a mlx-community quant for the unified memory and exit")
 
+    # ---- optional native kernels ----
+    p.add_argument("--fast-moe-prefill", dest="fast_moe_prefill", action="store_true",
+                   default=None,
+                   help="use the fused Metal weighted-sum kernel (package agrimlxo-kernels)"
+                        " for large prefill batches; reorders the fp accumulation vs the"
+                        " stock ops (also AGRIMLXO_FAST_MOE=1; default off)")
+
 
 def user_requested_moe(argv: List[str]) -> bool:
     """True when the user passed any --moe-* / --q35-* / --no-moe-expansion flag."""
@@ -174,6 +201,13 @@ def user_requested_moe(argv: List[str]) -> bool:
 
 def env_disabled_moe() -> bool:
     return os.environ.get("AGRIMLXO_NO_MOE_EXPANSION", "") not in ("", "0")
+
+
+def fast_moe_prefill_requested(args) -> bool:
+    """--fast-moe-prefill flag or AGRIMLXO_FAST_MOE=1 env."""
+    if getattr(args, "fast_moe_prefill", None):
+        return True
+    return os.environ.get("AGRIMLXO_FAST_MOE", "") not in ("", "0")
 
 
 def _parse_reduce_layers(spec: str):
@@ -222,9 +256,8 @@ def parse_args(argv: Optional[List[str]] = None):
     parser = _build_parser()
     # `agrimlxo ...` (no subcommand) == `agrimlxo serve ...`
     first = argv[0] if argv else None
-    if first is None or first.startswith("-"):
-        argv = ["serve"] + argv
-    elif first not in ("serve", "download", "list"):
+    subcommands = ("serve", "download", "list", "mixed-quantize")
+    if first is None or first.startswith("-") or first not in subcommands:
         argv = ["serve"] + argv
     args = parser.parse_args(argv)
     return args

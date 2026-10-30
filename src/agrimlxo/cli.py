@@ -9,6 +9,7 @@ from typing import List, Optional
 from ._version import __version__
 from .args import (
     expansion_configs_from_args,
+    fast_moe_prefill_requested,
     parse_args,
     user_requested_moe,
 )
@@ -229,6 +230,33 @@ def cmd_list(extra_dir: Optional[str]):
         print(f"{c}{geom}")
 
 
+def cmd_mixed_quantize(args):
+    from pathlib import Path as _P
+
+    from .mixed_quantize import mixed_quantize
+
+    src = resolve_model_arg(args.model, None, ["serve", "-m", args.model])
+    _log(f"mixed-quantize: {src} -> {args.out}")
+    summary = mixed_quantize(
+        _P(src),
+        _P(args.out).expanduser(),
+        order_file=args.order,
+        layers_spec=args.layers,
+        top_m=args.top_m,
+        hi_bits=args.hi_bits,
+        lo_bits=args.lo_bits,
+        hi_group_size=args.hi_group_size,
+        lo_group_size=args.lo_group_size,
+    )
+    for layer in summary.get("layers", []):
+        s = summary[layer]
+        _log(
+            f"  layer {layer}: {s['hi']} experts @ {s['hi_bits']}b"
+            f" (top: {s['hi_ids']}...), {s['lo']} @ {s['lo_bits']}b"
+        )
+    _log(f"mixed-quantize: written {summary['out_dir']}")
+
+
 def apply_default_profile(args, model_path: Path, argv: List[str]):
     """AgrillaMoE behavior: inject the signature-matched default expansion
     profile only when the user passed no --moe-* flag and didn't disable it."""
@@ -270,9 +298,25 @@ def cmd_serve(args, argv: List[str]):
     from .loader import LoadedModel, resolve_model_path, build_expansion_runtime
     from .tokenizer import Tokenizer
     from .engine import Engine
+    from . import kernels
 
     print(_BANNER)
     _log(f"agrimlxo {__version__}  (MLX server, MoE expert expansion)")
+
+    if fast_moe_prefill_requested(args):
+        if kernels.native_available():
+            kernels.set_fast_prefill(True)
+            _log("kernels: fused MoE weighted-sum enabled for large prefill batches")
+        else:
+            _log(
+                "kernels: native kernels not available"
+                + (
+                    f" ({kernels.native_error()})"
+                    if kernels.native_error()
+                    else " (build on macOS with: AGRIMLXO_WITH_KERNELS=1 pip install ./native)"
+                )
+                + "; keeping the stock MLX ops"
+            )
 
     model_path = resolve_model_arg(args.model, args.models_dir, argv)
     apply_default_profile(args, model_path, argv)
@@ -328,6 +372,9 @@ def main(argv: Optional[List[str]] = None):
         return
     if args.command == "list":
         cmd_list(args.models_dir)
+        return
+    if args.command == "mixed-quantize":
+        cmd_mixed_quantize(args)
         return
     if args.command == "serve":
         if args.suggest_quant:

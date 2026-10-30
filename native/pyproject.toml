@@ -1,0 +1,27 @@
+[build-system]
+requires = [
+    "setuptools>=61.0",
+    "wheel",
+    # The nanobind pin must match the ABI version the installed mlx wheel
+    # was built with (mlx 0.32.x pins nanobind v3.1.0 via FetchContent).
+    # A mismatched nanobind isolates the `mlx` NB_DOMAIN, so the extension
+    # rejects every mlx.core.array at the type caster; kernels.py probes
+    # once (abi_probe) and degrades cleanly either way.
+    "nanobind==3.1.0",
+    "mlx==0.32.4",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agrimlxo-kernels"
+version = "0.1.0"
+description = "Optional native Metal kernels for AgrimlxO (fused MoE weighted sum, expansion-ready)"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+dependencies = ["mlx>=0.29.0"]
+
+[tool.setuptools]
+packages = ["agrimlxo_kernels"]
+
+[tool.setuptools.package-data]
+agrimlxo_kernels = ["*.metallib", "*.so", "*.dylib"]

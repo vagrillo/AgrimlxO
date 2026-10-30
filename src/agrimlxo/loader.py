@@ -51,6 +51,35 @@ def load_config(model_path: Path) -> dict:
         return json.load(f)
 
 
+def parse_mixed_quant(config: dict) -> Optional[dict]:
+    """config ``moe_expert_quant`` annotation -> {layer_idx: [groups]}.
+
+    Format (per layer index, missing layers stay uniformly quantized):
+
+        "moe_expert_quant": {
+          "25": [{"bits": 8, "group_size": 64, "experts": [0, 41, ...]},
+                 {"bits": 4, "group_size": 64}]
+        }
+    """
+    spec = config.get("moe_expert_quant")
+    if not spec:
+        # also accept it nested in text_config (VLM-style checkpoints)
+        text = config.get("text_config")
+        if isinstance(text, dict):
+            spec = text.get("moe_expert_quant")
+    if not spec or not isinstance(spec, dict):
+        return None
+    out = {}
+    for key, groups in spec.items():
+        try:
+            layer = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(groups, list) and groups:
+            out[layer] = groups
+    return out or None
+
+
 def _quantize_model(model: nn.Module, config: dict, weights: dict) -> None:
     quantization = config.get("quantization")
     if quantization is None:
@@ -63,7 +92,9 @@ def _quantize_model(model: nn.Module, config: dict, weights: dict) -> None:
         return
 
     per_layer = {
-        k: v for k, v in quantization.items() if isinstance(v, dict)
+        k: v
+        for k, v in quantization.items()
+        if isinstance(v, dict) or v is False or v is True
     }
     group_size = int(quantization.get("group_size", 64))
     bits = int(quantization.get("bits", 4))
@@ -72,10 +103,13 @@ def _quantize_model(model: nn.Module, config: dict, weights: dict) -> None:
     def class_predicate(p, m):
         # custom per-layer quantizations baked into the config
         if p in per_layer:
-            override = dict(per_layer[p])
-            if override.get("linear") is False and "bits" not in override:
+            override = per_layer[p]
+            if override is False:
                 return False
-            return override
+            if isinstance(override, dict):
+                if override.get("linear") is False and "bits" not in override:
+                    return False
+                return override
         if not hasattr(m, "to_quantized"):
             return False
         # quantized checkpoints carry their scales in the weights
@@ -115,6 +149,7 @@ class LoadedModel:
                 n_expert=geometry.n_expert,
             )
         self.expansion = expansion
+        self.mixed_quant = parse_mixed_quant(self.config)
 
         import importlib
 
@@ -123,7 +158,9 @@ class LoadedModel:
         if ModelArgs is None:
             raise ValueError(f"no ModelArgs for {model_cls}")
         model_args = ModelArgs.from_dict(self.config)
-        model = model_cls(model_args, expansion=expansion)
+        model = model_cls(
+            model_args, expansion=expansion, mixed_quant=self.mixed_quant
+        )
 
         weight_files = sorted(model_path.glob("model*.safetensors"))
         if not weight_files:
