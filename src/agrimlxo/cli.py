@@ -406,8 +406,13 @@ def cmd_serve(args, argv: List[str]):
     atexit.register(engine.usage.flush)
 
     if getattr(args, "mixed_from_usage", False):
-        from .mixed_quantize import apply_usage_mix_in_memory
+        from .mixed_quantize import ExpertQuantCache, apply_usage_mix_in_memory
 
+        quant_cache = ExpertQuantCache(
+            "./expertcache",
+            _parse_budget(args.kache_budget) if hasattr(args, "kache_budget")
+            else 8 << 30,
+        )
         ranking_src = engine.usage.snapshot()["counts"]
         orders = {
             l: sorted(range(len(row)), key=lambda e: (-row[e], e))
@@ -425,7 +430,7 @@ def cmd_serve(args, argv: List[str]):
 
             spec = apply_usage_mix_4tier(
                 loaded, orders, target_bytes=_parse_bytes(args.mem_target),
-                layers_spec="0--1",
+                layers_spec="0--1", quant_cache=quant_cache,
             )
             _log(f"mixed-from-usage: 4 tier (8/6/4/2) su {len(spec)} layer,"
                  f" target {args.mem_target}")
@@ -433,6 +438,7 @@ def cmd_serve(args, argv: List[str]):
             spec = apply_usage_mix_in_memory(
                 loaded, orders, top_m=args.top_m,
                 hi_bits=args.hi_bits, lo_bits=args.lo_bits,
+                quant_cache=quant_cache,
             )
             _log(
                 f"mixed-from-usage: {len(spec)} MoE layer quantizzati per uso"

@@ -15,6 +15,7 @@ source checkpoint's quantization unchanged.
 """
 
 import json
+import time
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -52,6 +53,127 @@ def parse_layers(spec: str, n_layer: int) -> List[int]:
             end = n_layer - 1
         return list(range(start, end + 1))
     return [int(spec)]
+
+
+class ExpertQuantCache:
+    """LRU disk cache of generated per-expert quantized tensors.
+
+    Key: (layer, expert, bits, group_size) -> {proj_weight/scales/biases}.
+    Makes re-mixing cheap: an expert that returns to a tier it had before is
+    loaded from ./expertcache instead of dequantize+requantize. Weight arrays
+    roundtrip through safetensors (the native mx path — the same one used to
+    load the model itself).
+    """
+
+    def __init__(self, cache_dir: str, budget_bytes: int = 8 << 30):
+        self.dir = Path(cache_dir)
+        self.budget = int(budget_bytes)
+        self.hits = 0
+        self.misses = 0
+        self.index: Dict[str, dict] = {}
+        self.index_path = self.dir / "index.json"
+        self._load_index()
+
+    def _load_index(self):
+        try:
+            if self.index_path.exists():
+                self.index = json.loads(self.index_path.read_text())
+        except Exception:
+            self.index = {}
+
+    def _save_index(self):
+        try:
+            self.index_path.write_text(json.dumps(self.index))
+        except Exception:
+            pass
+
+    def _key(self, layer: int, expert: int, bits: int, gsize: int) -> str:
+        return f"L{layer}_E{expert}_{bits}b_g{gsize}"
+
+    def _total(self) -> int:
+        return int(sum(e.get("nbytes", 0) for e in self.index.values()))
+
+    def _evict(self):
+        while self._total() > self.budget and self.index:
+            oldest = min(self.index,
+                         key=lambda k: (self.index[k].get("last_used", 0),
+                                        self.index[k].get("uses", 0)))
+            entry = self.index.pop(oldest)
+            (self.dir / f"{oldest}.safetensors").unlink(missing_ok=True)
+            self._save_index()
+
+    def get_group(self, gkey: str) -> Optional[Dict[str, mx.array]]:
+        k = f"G_{gkey}"
+        f = self.dir / f"{k}.safetensors"
+        if not f.exists():
+            self.misses += 1
+            return None
+        try:
+            tensors = dict(mx.load(str(f)))
+            entry = self.index.get(k, {})
+            entry["last_used"] = time.time()
+            entry["uses"] = entry.get("uses", 0) + 1
+            self.index[k] = entry
+            self._save_index()
+            self.hits += 1
+            return tensors
+        except Exception as e:
+            logger.warning("expert cache get_group %s: %s", k, e)
+            f.unlink(missing_ok=True)
+            self.index.pop(k, None)
+            return None
+
+    def put_group(self, gkey: str, tensors: Dict[str, mx.array]):
+        k = f"G_{gkey}"
+        try:
+            f = self.dir / f"{k}.safetensors"
+            mx.save_safetensors(str(f), tensors)
+            nbytes = sum(int(v.nbytes) for v in tensors.values())
+            entry = self.index.get(k, {"uses": 0})
+            entry.update({"nbytes": nbytes, "last_used": time.time(),
+                          "uses": entry.get("uses", 0) + 1})
+            self.index[k] = entry
+            self._evict()
+            self._save_index()
+        except Exception as e:
+            logger.warning("expert cache put_group %s: %s", k, e)
+
+    def get(self, layer: int, expert: int, bits: int, gsize: int) -> Optional[Dict[str, mx.array]]:
+        k = self._key(layer, expert, bits, gsize)
+        f = self.dir / f"{k}.safetensors"
+        if not f.exists() or k not in self.index:
+            self.misses += 1
+            return None
+        try:
+            tensors = {kk.split(".", 1)[1]: v for kk, v in mx.load(str(f)).items()}
+            entry = self.index[k]
+            entry["last_used"] = time.time()
+            entry["uses"] = entry.get("uses", 0) + 1
+            self._save_index()
+            self.hits += 1
+            return tensors
+        except Exception as e:
+            logger.warning("expert cache get %s: %s", k, e)
+            f.unlink(missing_ok=True)
+            self.index.pop(k, None)
+            self.misses += 1
+            return None
+
+    def put(self, layer: int, expert: int, bits: int, gsize: int,
+            tensors: Dict[str, mx.array]):
+        k = self._key(layer, expert, bits, gsize)
+        try:
+            f = self.dir / f"{k}.safetensors"
+            mx.save_safetensors(str(f), {f"{kk}": v for kk, v in tensors.items()})
+            nbytes = sum(int(v.nbytes) for v in tensors.values())
+            entry = self.index.get(k, {"uses": 0})
+            entry.update({"nbytes": nbytes, "last_used": time.time(),
+                          "uses": entry.get("uses", 0) + 1})
+            self.index[k] = entry
+            self._evict()
+            self._save_index()
+        except Exception as e:
+            logger.warning("expert cache put %s: %s", k, e)
 
 
 def _layer_prefix(model) -> str:
@@ -231,6 +353,7 @@ def apply_usage_mix_in_memory(
     lo_bits: int = 4,
     hi_group_size: int = 64,
     lo_group_size: int = 64,
+    quant_cache: Optional[ExpertQuantCache] = None,
 ) -> Dict[int, List[dict]]:
     """Load-time per-expert mixed quantization driven by the usage ranking.
 
@@ -301,10 +424,26 @@ def apply_usage_mix_in_memory(
                         bits=int(qcfg.get("bits", 4)),
                         mode=qcfg.get("mode", "affine"),
                     )
-                wq, scales, *biases = mx.quantize(src[idx], group_size=gsize, bits=bits)
+                tensors = None
+                if quant_cache is not None:
+                    # la fascia e' deterministica dato (layer, ids, bits,
+                    # gsize): chiave = fingerprint degli id della fascia
+                    gkey = f"{layer}_{bits}_{gsize}_" + "-".join(map(str, sorted(ids)))
+                    tensors = quant_cache.get_group(gkey)
+                if tensors is None:
+                    wq, scales, *biases = mx.quantize(
+                        src[idx], group_size=gsize, bits=bits
+                    )
+                    tensors = {
+                        f"{name}.weight": wq, f"{name}.scales": scales,
+                        f"{name}.biases": biases[0] if biases else None,
+                    }
+                    if quant_cache is not None:
+                        quant_cache.put_group(gkey, tensors)
                 mixed_sm.load_group(gi, name, {
-                    "weight": wq, "scales": scales,
-                    "biases": biases[0] if biases else None,
+                    "weight": tensors[f"{name}.weight"],
+                    "scales": tensors[f"{name}.scales"],
+                    "biases": tensors.get(f"{name}.biases"),
                 })
 
         mlp.switch_mlp = mixed_sm
@@ -410,6 +549,7 @@ def apply_usage_mix_4tier(
     layers_spec: str = "0--1",
     group_size: int = 64,
     tiers: List[int] = (8, 6, 4, 2),
+    quant_cache: Optional[ExpertQuantCache] = None,
 ) -> Dict[int, List[dict]]:
     """4-tier (8/6/4/2 bit) in-memory mixing with a memory target. The tier
     bands follow the usage ranking (hot first) and the solver fits the
@@ -455,6 +595,7 @@ def apply_usage_mix_4tier(
             ids = g.expert_ids
             gsize, bits = g.group_size, g.bits
             idx = mx.array(ids)
+            gkey_ids = "-".join(map(str, sorted(ids)))
             for name in _PROJECTIONS:
                 proj = getattr(sm, name)
                 w = getattr(proj, "weight")
@@ -477,10 +618,20 @@ def apply_usage_mix_4tier(
                         bits=int(qcfg.get("bits", 4)),
                         mode=qcfg.get("mode", "affine"),
                     )
-                wq, scales, *biases = mx.quantize(src[idx], group_size=gsize, bits=bits)
+                tensors = None
+                gkey = f"{layer}_{name}_{bits}_{gsize}_{gkey_ids}"
+                if quant_cache is not None:
+                    tensors = quant_cache.get_group(gkey)
+                if tensors is None:
+                    wq, scales, *biases = mx.quantize(src[idx], group_size=gsize, bits=bits)
+                    tensors = {f"{name}.weight": wq, f"{name}.scales": scales,
+                               f"{name}.biases": biases[0] if biases else None}
+                    if quant_cache is not None:
+                        quant_cache.put_group(gkey, tensors)
                 mixed_sm.load_group(gi, name, {
-                    "weight": wq, "scales": scales,
-                    "biases": biases[0] if biases else None,
+                    "weight": tensors[f"{name}.weight"],
+                    "scales": tensors[f"{name}.scales"],
+                    "biases": tensors.get(f"{name}.biases"),
                 })
         mlp.switch_mlp = mixed_sm
 
