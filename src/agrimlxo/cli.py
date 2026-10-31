@@ -334,29 +334,6 @@ def cmd_serve(args, argv: List[str]):
         for line in expansion.banner_lines():
             _log(line)
 
-    engine = Engine(
-        loaded,
-        tokenizer,
-        ctx_size=args.ctx_size,
-        prefill_step_size=args.batch_size,
-        parallel=args.parallel,
-        cache_type=args.cache_type_k,
-    )
-    engine.progress_cb = progress_cb
-    if args.cache_type_k != args.cache_type_v:
-        _log(
-            "note: --cache-type-k and --cache-type-v differ; using the K type for"
-            " both (per-tensor types are not supported yet)"
-        )
-
-    from .server import run_server
-
-    if not args.no_compile:
-        from .speed import compile_ffn
-
-        n = compile_ffn(engine.loaded.model)
-        if n:
-            _log(f"speed: mx.compile applied to {n} FFN sub-calls")
     import threading as _threading
 
     last_line = {"n": 0}
@@ -385,6 +362,29 @@ def cmd_serve(args, argv: List[str]):
         sys.stderr.flush()
         last_line["n"] = len(line)
 
+    engine = Engine(
+        loaded,
+        tokenizer,
+        ctx_size=args.ctx_size,
+        prefill_step_size=args.batch_size,
+        parallel=args.parallel,
+        cache_type=args.cache_type_k,
+    )
+    engine.progress_cb = progress_cb
+    if args.cache_type_k != args.cache_type_v:
+        _log(
+            "note: --cache-type-k and --cache-type-v differ; using the K type for"
+            " both (per-tensor types are not supported yet)"
+        )
+
+    from .server import run_server
+
+    if not args.no_compile:
+        from .speed import compile_ffn
+
+        n = compile_ffn(engine.loaded.model)
+        if n:
+            _log(f"speed: mx.compile applied to {n} FFN sub-calls")
     if not args.no_warmup:
         w = engine.warmup()
         mem = w.get("memory") or {}
