@@ -14,7 +14,9 @@ router gate (kept at its 8-bit protection) and all other layers keep the
 source checkpoint's quantization unchanged.
 """
 
+import hashlib
 import json
+import logging
 import time
 import shutil
 from pathlib import Path
@@ -53,6 +55,9 @@ def parse_layers(spec: str, n_layer: int) -> List[int]:
             end = n_layer - 1
         return list(range(start, end + 1))
     return [int(spec)]
+
+
+logger = logging.getLogger(__name__)
 
 
 class ExpertQuantCache:
@@ -428,7 +433,9 @@ def apply_usage_mix_in_memory(
                 if quant_cache is not None:
                     # la fascia e' deterministica dato (layer, ids, bits,
                     # gsize): chiave = fingerprint degli id della fascia
-                    gkey = f"{layer}_{bits}_{gsize}_" + "-".join(map(str, sorted(ids)))
+                    _ids_src = "-".join(map(str, sorted(ids)))
+                    _gkey_hash = hashlib.sha1(_ids_src.encode()).hexdigest()[:16]
+                    gkey = f"{layer}_{bits}_{gsize}_{_gkey_hash}"
                     tensors = quant_cache.get_group(gkey)
                 if tensors is None:
                     wq, scales, *biases = mx.quantize(
@@ -595,7 +602,8 @@ def apply_usage_mix_4tier(
             ids = g.expert_ids
             gsize, bits = g.group_size, g.bits
             idx = mx.array(ids)
-            gkey_ids = "-".join(map(str, sorted(ids)))
+            _ids_src = "-".join(map(str, sorted(ids)))
+            _gkey_hash = hashlib.sha1(_ids_src.encode()).hexdigest()[:16]
             for name in _PROJECTIONS:
                 proj = getattr(sm, name)
                 w = getattr(proj, "weight")
@@ -619,7 +627,7 @@ def apply_usage_mix_4tier(
                         mode=qcfg.get("mode", "affine"),
                     )
                 tensors = None
-                gkey = f"{layer}_{name}_{bits}_{gsize}_{gkey_ids}"
+                gkey = f"{layer}_{name}_{bits}_{gsize}_{_gkey_hash}"
                 if quant_cache is not None:
                     tensors = quant_cache.get_group(gkey)
                 if tensors is None:
