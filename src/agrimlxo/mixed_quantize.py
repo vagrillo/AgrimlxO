@@ -636,3 +636,58 @@ def apply_usage_mix_4tier(
         mlp.switch_mlp = mixed_sm
 
     return spec
+
+
+def quant_matrix(loaded) -> Dict:
+    """Current per-(layer, expert) quantization bits of the loaded model.
+
+    Mixed layers report each group's bits; uniform layers report their
+    source bits (inferred from the packed weight size). Returns
+    {layers, experts, matrix [[bits]], mixed_layers, uniform_default}.
+    """
+    model = loaded.model
+    prefix = _layer_prefix(model)
+    quant = loaded.config.get("quantization")
+    layers = loaded.layers
+    L = len(layers)
+    E = 0
+    matrix: List[List[int]] = []
+    mixed_layers: List[int] = []
+    uniform_default = 4
+
+    for li, l in enumerate(layers):
+        mlp = l.mlp
+        sm = getattr(mlp, "switch_mlp", None)
+        if sm is None:
+            continue
+        E = sm.gate_proj.num_experts
+        if hasattr(sm, "groups"):
+            mixed_layers.append(li)
+            row = [0] * E
+            for g in sm.groups:
+                for e in g.expert_ids:
+                    row[e] = g.bits
+            matrix.append(row)
+        else:
+            # bits uniformi: dai scales del checkpoint (packed) o dal config
+            proj = getattr(sm, "gate_proj")
+            sc = getattr(proj, "scales", None)
+            if sc is not None:
+                dims_in = sc.shape[2] * getattr(proj, "group_size", 64)
+                bits = int(round(
+                    proj.weight.nbytes * 8
+                    / (proj.weight.shape[0] * proj.weight.shape[2]
+                       + proj.weight.shape[0] * sc.shape[2] * 16)
+                )) if False else int(round(
+                    proj.weight.nbytes * 8
+                    / (E * proj.weight.shape[1] * proj.weight.shape[2])
+                ))
+            else:
+                bits = 16
+            uniform_default = bits
+            matrix.append([bits] * E)
+
+    return {
+        "layers": L, "experts": E, "matrix": matrix,
+        "mixed_layers": mixed_layers, "uniform_bits": uniform_default,
+    }

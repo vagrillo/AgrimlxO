@@ -661,6 +661,12 @@ def create_app(state: ServerState) -> FastAPI:
             raise HTTPException(404, "usage collector unavailable")
         return u.snapshot(session=(scope == "session"))
 
+    @app.get("/moe/quant")
+    def moe_quant(_: None = Depends(auth)):
+        from .mixed_quantize import quant_matrix
+
+        return quant_matrix(state.engine.loaded)
+
     @app.get("/moe/usage/ranking")
     def moe_usage_ranking(_: None = Depends(auth)):
         """Per-layer expert ranking (hot first) — the input format of

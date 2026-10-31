@@ -290,6 +290,10 @@ textarea { resize: vertical; min-height: 64px; }
       <span class="uscope" data-s="all" style="cursor:pointer;font-weight:700;color:var(--accent2)">All-time</span>
       <span style="color:var(--text2)">/</span>
       <span class="uscope" data-s="session" style="cursor:pointer;color:var(--text2)">Session (trip)</span>
+      <span style="color:var(--text2)">·</span>
+      <span class="uview" data-v="led" style="cursor:pointer;font-weight:700;color:var(--accent2)">LED</span>
+      <span style="color:var(--text2)">/</span>
+      <span class="uview" data-v="quant" style="cursor:pointer;color:var(--text2)">Quant map</span>
     </div>
     <div class="moeinfo">Rows: experts (0..255) · Columns: layers (0..39) ·
       brightness = usage share; the hottest LEDs saturate to white. Only the
@@ -985,7 +989,7 @@ $("pdfdpi-v").textContent = $("pdfdpi").value;
 if (chats.length) resumeChat(chats[0].id);
 else renderHistory();
 // ---------- expert usage heatmap ----------
-let usageScope = "all", usageTimer = null;
+let usageScope = "all", usageTimer = null, usageView = "led";
 let usageGamma = parseFloat(localStorage.getItem("agrimlxo.usagegamma")) || 0.6;
 function setUsageOpen(open){
   const p = $("usagepanel");
@@ -1033,12 +1037,36 @@ document.querySelectorAll(".uscope").forEach(el => el.addEventListener("click", 
 }));
 async function loadUsage(){
   try {
+    if (usageView === "quant") {
+      const q = await (await fetch("/moe/quant")).json();
+      drawQuant(q);
+      $("usagereset").style.display = "none";
+      $("usageinfo").innerHTML = `quantizzazione corrente: rosso 8b · arancio 6b · giallo 4b · bianco 2b` +
+        (q.mixed_layers.length ? ` · layer mixed: ${q.mixed_layers.join(",")}` : ` · uniforme ${q.uniform_bits}b`);
+      return;
+    }
     const u = await (await fetch(`/moe/usage?scope=${usageScope}`)).json();
     drawHeatmap(u);
     $("usagereset").style.display = usageScope === "session" ? "" : "none";
     $("usageinfo").innerHTML = `tokens observed: <b>${u.tokens}</b>` +
       (usageScope === "session" ? " (session — trip counter)" : " (all-time)");
   } catch(e) {}
+}
+const QCOLORS = {8: "#e11d48", 6: "#f97316", 4: "#eab308", 2: "#f8fafc", 16: "#3b82f6"};
+function drawQuant(q){
+  const cv = $("usagecanvas"), ctx = cv.getContext("2d");
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
+  const L = q.layers, E = q.experts;
+  const cw = cv.width / L, ch = cv.height / E;
+  for (let l = 0; l < L; l++) {
+    for (let e = 0; e < E; e++) {
+      const bits = q.matrix[l][e];
+      ctx.fillStyle = QCOLORS[bits] || "#334155";
+      ctx.fillRect(l * cw + 0.5, e * ch + 0.5, cw - 1, ch - 1);
+    }
+  }
+  ctx.fillStyle = "rgba(160,160,160,.9)"; ctx.font = "10px monospace";
+  for (let l = 0; l < L; l += 5) ctx.fillText(l, l * cw + 2, cv.height - 2);
 }
 function drawHeatmap(u){
   const cv = $("usagecanvas"), ctx = cv.getContext("2d");
@@ -1114,6 +1142,14 @@ $("usageexport").addEventListener("click", async () => {
   a.click();
   URL.revokeObjectURL(a.href);
 });
+document.querySelectorAll(".uview").forEach(el => el.addEventListener("click", () => {
+  usageView = el.dataset.v;
+  document.querySelectorAll(".uview").forEach(e2 => {
+    e2.style.fontWeight = e2.dataset.v === usageView ? "700" : "400";
+    e2.style.color = e2.dataset.v === usageView ? "var(--accent2)" : "var(--text2)";
+  });
+  loadUsage();
+}));
 $("usagelperlayer").checked = localStorage.getItem("agrimlxo.usagelperlayer") !== "0";
 $("usagelperlayer").addEventListener("change", e => {
   localStorage.setItem("agrimlxo.usagelperlayer", e.target.checked ? "1" : "0");
