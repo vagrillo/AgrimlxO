@@ -220,3 +220,94 @@ def mixed_quantize(
     summary["out_dir"] = str(out_dir)
     summary["layers"] = sorted(int(k) for k in mixed_spec)
     return summary
+
+
+def apply_usage_mix_in_memory(
+    loaded,
+    orders: Dict[int, List[int]],
+    layers_spec: str = "0--1",
+    top_m: int = 64,
+    hi_bits: int = 8,
+    lo_bits: int = 4,
+    hi_group_size: int = 64,
+    lo_group_size: int = 64,
+) -> Dict[int, List[dict]]:
+    """Load-time per-expert mixed quantization driven by the usage ranking.
+
+    The model on disk stays uniform (e.g. 8-bit); the switch_mlps of the
+    selected MoE layers are dequantized in memory, re-quantized into hot/cold
+    groups per the ranking, and the module is swapped for MixedSwitchGLU.
+    No disk round-trip: the uniform checkpoint remains the single source.
+
+    Returns {layer: groups-spec} (the moe_expert_quant annotation).
+    """
+    from .models.mixed_experts import MixedSwitchGLU
+
+    model = loaded.model
+    prefix = _layer_prefix(model)
+    quant = loaded.config.get("quantization")
+    n_layer = len(loaded.layers)
+    target_layers = set(parse_layers(layers_spec, n_layer))
+    mixed_spec: Dict[int, List[dict]] = {}
+    targs = getattr(model, "text_args", None)
+    hidden = getattr(targs, "hidden_size", None)
+    moe_hidden = getattr(targs, "moe_intermediate_size", None)
+
+    for layer in sorted(set(_moe_layer_indices(loaded)) & target_layers):
+        mlp = loaded.layers[layer].mlp
+        sm = mlp.switch_mlp
+        if hasattr(sm, "groups"):
+            continue  # già mixed
+        E = mlp.num_experts
+        order = list(orders.get(layer, []))
+        if len(order) < E:
+            order += [e for e in range(E) if e not in order]
+        order = order[:E]
+        hi_ids = order[: min(top_m, E)]
+        lo_ids = [e for e in range(E) if e not in set(hi_ids)]
+
+        groups_spec = [
+            {"bits": hi_bits, "group_size": hi_group_size,
+             "experts": [int(e) for e in hi_ids]},
+            {"bits": lo_bits, "group_size": lo_group_size},
+        ]
+        mixed_sm = MixedSwitchGLU(
+            hidden or mlp.gate.in_features, moe_hidden or hidden, E, groups_spec
+        )
+
+        for gi, ids in ((0, hi_ids), (1, lo_ids)):
+            gsize = hi_group_size if gi == 0 else lo_group_size
+            bits = hi_bits if gi == 0 else lo_bits
+            idx = mx.array(ids)
+            for name in _PROJECTIONS:
+                proj = getattr(sm, name)
+                w = getattr(proj, "weight")
+                sc = getattr(proj, "scales", None)
+                b = getattr(proj, "biases", None)
+                if sc is None:
+                    src = w
+                else:
+                    qcfg = {}
+                    if isinstance(quant, dict):
+                        key = f"{prefix}.layers.{layer}.mlp.switch_mlp.{name}"
+                        ov = quant.get(key)
+                        if isinstance(ov, dict) and "bits" in ov:
+                            qcfg = ov
+                        else:
+                            qcfg = {k: quant[k] for k in ("group_size", "bits", "mode") if k in quant}
+                    src = mx.dequantize(
+                        w, sc, b,
+                        group_size=int(qcfg.get("group_size", 64)),
+                        bits=int(qcfg.get("bits", 4)),
+                        mode=qcfg.get("mode", "affine"),
+                    )
+                wq, scales, *biases = mx.quantize(src[idx], group_size=gsize, bits=bits)
+                mixed_sm.load_group(gi, name, {
+                    "weight": wq, "scales": scales,
+                    "biases": biases[0] if biases else None,
+                })
+
+        mlp.switch_mlp = mixed_sm
+        mixed_spec[layer] = groups_spec
+
+    return mixed_spec

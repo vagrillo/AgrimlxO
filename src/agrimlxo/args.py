@@ -192,6 +192,16 @@ def _add_serve_args(p: argparse.ArgumentParser):
                         " for large prefill batches; reorders the fp accumulation vs the"
                         " stock ops (also AGRIMLXO_FAST_MOE=1; default off)")
 
+    # ---- load-time mixed quantization from usage ----
+    p.add_argument("--mixed-from-usage", dest="mixed_from_usage", action="store_true", default=False,
+                   help="at load: quantize the routed experts per usage (the all-time"
+                        " ranking in ./expertusage) — top-M hot experts at --hi-bits,"
+                        " the tail at --lo-bits; the checkpoint on disk stays uniform")
+    p.add_argument("--top-m", dest="top_m", type=int, default=64,
+                   help="hot experts per layer for --mixed-from-usage (default 64)")
+    p.add_argument("--hi-bits", dest="hi_bits", type=int, default=8)
+    p.add_argument("--lo-bits", dest="lo_bits", type=int, default=4)
+
     # ---- vision / pdf ----
     p.add_argument("--pdf-dpi", dest="pdf_dpi", type=int, default=100,
                    help="resolution used to render PDF pages as images (default: 100);"

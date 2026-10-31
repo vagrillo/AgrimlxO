@@ -405,6 +405,23 @@ def cmd_serve(args, argv: List[str]):
 
     atexit.register(engine.usage.flush)
 
+    if getattr(args, "mixed_from_usage", False):
+        from .mixed_quantize import apply_usage_mix_in_memory
+
+        ranking_src = engine.usage.snapshot()["counts"]
+        orders = {
+            l: sorted(range(len(row)), key=lambda e: (-row[e], e))
+            for l, row in enumerate(ranking_src)
+        }
+        spec = apply_usage_mix_in_memory(
+            loaded, orders, top_m=args.top_m,
+            hi_bits=args.hi_bits, lo_bits=args.lo_bits,
+        )
+        _log(
+            f"mixed-from-usage: {len(spec)} MoE layer quantizzati per uso"
+            f" (top-{args.top_m} @ {args.hi_bits}b, coda @ {args.lo_bits}b)"
+        )
+
     if not args.no_compile:
         from .speed import compile_ffn
 
