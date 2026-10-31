@@ -582,7 +582,19 @@ function loadChats(){
   try { chats = JSON.parse(localStorage.getItem(LS_CHATS) || "[]"); } catch(e) { chats = []; }
   if (!Array.isArray(chats)) chats = [];
 }
-function saveChats(){ localStorage.setItem(LS_CHATS, JSON.stringify(chats.slice(0, 50))); }
+function saveChats(){
+  try { localStorage.setItem(LS_CHATS, JSON.stringify(chats.slice(0, 50))); }
+  catch(e) {
+    // quota superata (data-URL di immagini): scarta le chat più vecchie e riprova
+    while (chats.length > 1) {
+      chats.pop();
+      try {
+        localStorage.setItem(LS_CHATS, JSON.stringify(chats));
+        break;
+      } catch(e2) {}
+    }
+  }
+}
 function saveCurrentChat(){
   if (!history.length) return;
   if (currentChatId === null) currentChatId = "c" + Date.now();
@@ -650,6 +662,15 @@ function buildMessages(){
   for (const m of history) {
     if (m.role === "assistant" && m.reasoning)
       msgs.push({role: "assistant", content: m.content, reasoning_content: m.reasoning});
+    else if (m.role === "user" && m.attachments && m.attachments.some(a => a.kind === "image")) {
+      // i modelli sono stateless: le immagini vanno reinviate a ogni turno
+      const parts = [];
+      if (m.content) parts.push({type: "text", text: m.content});
+      for (const a of m.attachments)
+        if (a.kind === "image" && a.dataUrl)
+          parts.push({type: "image_url", image_url: {url: a.dataUrl}});
+      msgs.push({role: "user", content: parts});
+    }
     else msgs.push({role: m.role, content: m.content});
   }
   return msgs;
