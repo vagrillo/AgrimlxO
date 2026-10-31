@@ -84,6 +84,38 @@ class Detokenizer:
         return rest
 
 
+def _read_template_file(model_path: Path) -> Optional[str]:
+    """Standalone template serializations some checkpoints ship instead of
+    an inline tokenizer_config entry: ``chat_template.jinja`` (raw, the
+    recent transformers format) or ``chat_template.json`` ({"chat_template":
+    ...} or the multi-template list). AutoTokenizer does not read these on
+    older transformers, leaving the model without a chat template."""
+    jinja = model_path / "chat_template.jinja"
+    if jinja.exists():
+        try:
+            text = jinja.read_text()
+            if text.strip():
+                return text
+        except Exception:
+            pass
+    js = model_path / "chat_template.json"
+    if js.exists():
+        try:
+            data = json.loads(js.read_text())
+        except Exception:
+            return None
+        if isinstance(data, dict) and isinstance(data.get("chat_template"), str):
+            return data["chat_template"]
+        if isinstance(data, list):
+            for t in data:
+                if isinstance(t, dict) and t.get("name") in (None, "default"):
+                    return t.get("template")
+            for t in data:
+                if isinstance(t, dict) and isinstance(t.get("template"), str):
+                    return t["template"]
+    return None
+
+
 class Tokenizer:
     """AgrimlxO tokenizer wrapper."""
 
@@ -92,6 +124,10 @@ class Tokenizer:
             str(model_path), trust_remote_code=False
         )
         self._chat_template_override = chat_template_override or None
+        if self._tokenizer.chat_template is None:
+            tmpl = _read_template_file(Path(model_path))
+            if tmpl:
+                self._tokenizer.chat_template = tmpl
 
         self.eos_token_ids: Set[int] = set()
         if self._tokenizer.eos_token_id is not None:
