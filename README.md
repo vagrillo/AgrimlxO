@@ -236,6 +236,24 @@ fallback and the mixed-quant roundtrip.
 * **Execution/compilation tests on a Mac are done manually by the
   maintainer** (per project instructions).
 
+## Conversation cache & ./kache (persistent KV snapshots)
+
+Multi-turn conversations reuse the prefill when the rendered prompt extends
+the previous one. The server snapshots the KV state **at the stable prefill
+boundary** (the render without the generation suffix — the only part the
+next turn reproduces identically) keyed by a conversation fingerprint; the
+next turn that extends it prefills **only the delta**. With reasoning on,
+the Qwen3.5 template re-renders past assistant turns (dropping/rewrapping
+their think blocks), so the reuse covers the user-turn prefix — the
+documented template behavior, not a defect.
+
+`--kache` additionally persists those snapshots in `--kache-dir ./kache`
+(native safetensors + JSON sidecar), making a continuing conversation skip
+its prefill **even after a server restart**. The directory is kept under
+`--kache-budget` (default 8GB) with LRU eviction (least recently used, then
+least reused). `--kache-restore` (experimental) also restores snapshots from
+disk into fresh slots after a restart — verify on your setup first.
+
 ## License
 
 Apache-2.0 — like both parents. The vendored mlx-lm modules keep their
