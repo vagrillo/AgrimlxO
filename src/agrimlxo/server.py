@@ -186,6 +186,12 @@ class ServerState:
         kwargs = dict(template_kwargs or {})
         if kwargs.get("enable_thinking") is None:
             kwargs.pop("enable_thinking", None)
+        if (
+            getattr(self.args, "no_thinking", False)
+            and "enable_thinking" not in kwargs
+            and not (template_kwargs or {}).get("enable_thinking")
+        ):
+            kwargs["enable_thinking"] = False
         flat = []
         image_urls: List[str] = []
         vision_block = "<|vision_start|><|image_pad|><|vision_end|>"
@@ -486,6 +492,7 @@ def create_app(state: ServerState) -> FastAPI:
             "model_name": state.model_name,
             "has_chat_template": state.tokenizer.has_chat_template,
             "reasoning_format": a.reasoning_format,
+            "no_thinking": a.no_thinking,
             "moe_expansion": moe,
             "tools": state.tools.names() if state.tools else [],
             "pdf_dpi": getattr(state.args, "pdf_dpi", 100),

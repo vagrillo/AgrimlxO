@@ -141,6 +141,12 @@ def _add_serve_args(p: argparse.ArgumentParser):
         choices=["auto", "none"],
         help="auto: split <think>…</think> into reasoning_content; none: keep it in content",
     )
+    p.add_argument(
+        "--no-thinking", dest="no_thinking", action="store_true", default=False,
+        help="disable the reasoning phase by default (enable_thinking=false in the"
+             " chat template: the model answers directly); a request can still"
+             " override it with enable_thinking/chat_template_kwargs",
+    )
 
     # ---- MoE expert expansion (the feature) ----
     p.add_argument("--moe-experts", "--q35-experts", dest="moe_experts", type=int, default=0,
