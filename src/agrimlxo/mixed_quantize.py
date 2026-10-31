@@ -694,8 +694,8 @@ def quant_matrix(loaded) -> Dict:
         sm = getattr(mlp, "switch_mlp", None)
         if sm is None:
             continue
-        E = sm.gate_proj.num_experts
         if hasattr(sm, "groups"):
+            E = sum(len(g.expert_ids) for g in sm.groups)
             mixed_layers.append(li)
             row = [0] * E
             for g in sm.groups:
@@ -703,6 +703,7 @@ def quant_matrix(loaded) -> Dict:
                     row[e] = g.bits
             matrix.append(row)
         else:
+            E = sm.gate_proj.num_experts
             # bits uniformi: dai scales del checkpoint (packed) o dal config
             proj = getattr(sm, "gate_proj")
             sc = getattr(proj, "scales", None)
