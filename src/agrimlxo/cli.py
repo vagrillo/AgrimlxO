@@ -413,14 +413,31 @@ def cmd_serve(args, argv: List[str]):
             l: sorted(range(len(row)), key=lambda e: (-row[e], e))
             for l, row in enumerate(ranking_src)
         }
-        spec = apply_usage_mix_in_memory(
-            loaded, orders, top_m=args.top_m,
-            hi_bits=args.hi_bits, lo_bits=args.lo_bits,
-        )
-        _log(
-            f"mixed-from-usage: {len(spec)} MoE layer quantizzati per uso"
-            f" (top-{args.top_m} @ {args.hi_bits}b, coda @ {args.lo_bits}b)"
-        )
+        if getattr(args, "mem_target", None):
+            from .mixed_quantize import apply_usage_mix_4tier
+
+            def _parse_bytes(spec: str) -> int:
+                spec = spec.strip().upper()
+                for suffix, m in (("GB", 1 << 30), ("MB", 1 << 20)):
+                    if spec.endswith(suffix):
+                        return int(float(spec[:-len(suffix)]) * m)
+                return int(float(spec))
+
+            spec = apply_usage_mix_4tier(
+                loaded, orders, target_bytes=_parse_bytes(args.mem_target),
+                layers_spec="0--1",
+            )
+            _log(f"mixed-from-usage: 4 tier (8/6/4/2) su {len(spec)} layer,"
+                 f" target {args.mem_target}")
+        else:
+            spec = apply_usage_mix_in_memory(
+                loaded, orders, top_m=args.top_m,
+                hi_bits=args.hi_bits, lo_bits=args.lo_bits,
+            )
+            _log(
+                f"mixed-from-usage: {len(spec)} MoE layer quantizzati per uso"
+                f" (top-{args.top_m} @ {args.hi_bits}b, coda @ {args.lo_bits}b)"
+            )
 
     if not args.no_compile:
         from .speed import compile_ffn

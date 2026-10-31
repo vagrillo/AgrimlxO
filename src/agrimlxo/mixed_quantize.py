@@ -311,3 +311,177 @@ def apply_usage_mix_in_memory(
         mixed_spec[layer] = groups_spec
 
     return mixed_spec
+
+
+def _expert_bytes(mlp, layer_idx: int, prefix: str, quant) -> Tuple[int, int]:
+    """(bytes per expert, source bits) of the uniform switch_mlp."""
+    sm = mlp.switch_mlp
+    E = sm.gate_proj.num_experts
+    total = 0
+    src_bits_w = 0
+    for name in _PROJECTIONS:
+        proj = getattr(sm, name)
+        w = getattr(proj, "weight")
+        sc = getattr(proj, "scales", None)
+        total += int(w.nbytes) // E
+        if sc is not None:
+            total += (int(sc.nbytes) + (int(getattr(proj, "biases").nbytes)
+                        if getattr(proj, "biases", None) is not None else 0)) // E
+            dims_in = sc.shape[2] * getattr(proj, "group_size", 64)
+            src_bits_w += int(round(w.nbytes * 8 / (E * w.shape[1] * w.shape[2])))
+        else:
+            dims_in = w.shape[2]
+            src_bits_w += 16
+    return total, max(2, src_bits_w // len(_PROJECTIONS))
+
+
+def _bytes_at(dims_out: int, dims_in: int, bits: int, group_size: int = 64) -> int:
+    """Packed weight + f16 scales/biases bytes of one expert at `bits`."""
+    w = dims_out * dims_in * bits // 8
+    groups = dims_in // group_size
+    s = dims_out * groups * 2 * 2  # scales + biases f16
+    return w + s
+
+
+def solve_tiers(
+    layer_infos: List[dict],
+    target_bytes: int,
+    tiers: List[int] = (8, 6, 4, 2),
+    group_size: int = 64,
+) -> Dict[int, List[dict]]:
+    """Assign 8/6/4/2-bit tiers per rank position (hot first) so the total
+    routed-expert memory fits `target_bytes`. Greedy: hottest ranks get the
+    highest tier that still fits the running budget.
+
+    layer_infos: [{layer, E, dims_out, dims_in, src_bits} per MoE layer].
+    Returns {layer: [groups-spec]}.
+    """
+    # base: tutto a 2 bit (il minimo)
+    base = sum(_bytes_at(i["dims_out"], i["dims_in"], tiers[-1], group_size)
+               * i["E"] for i in layer_infos)
+    if base > target_bytes:
+        raise ValueError(
+            f"mem target too low: all experts at {tiers[-1]} bit already take"
+            f" {base / 1e9:.1f} GB > {target_bytes / 1e9:.1f} GB"
+        )
+    remaining = target_bytes - base
+    tier_of_rank = [tiers[-1]] * max(i["E"] for i in layer_infos)
+    # upgrade hot-first: per rank, prova i tier dal più alto
+    max_E = max(i["E"] for i in layer_infos)
+    n_layers = len(layer_infos)
+    for rank in range(max_E):
+        for tier in tiers[:-1]:
+            cost = sum(
+                _bytes_at(i["dims_out"], i["dims_in"], tier, group_size)
+                - _bytes_at(i["dims_out"], i["dims_in"], tiers[-1], group_size)
+                for i in layer_infos if rank < i["E"]
+            )
+            if cost <= remaining:
+                tier_of_rank[rank] = tier
+                remaining -= cost
+                break
+        else:
+            continue
+    # groups per layer: contigui per rank -> 4 gruppi
+    out: Dict[int, List[dict]] = {}
+    for i in layer_infos:
+        E = i["E"]
+        spec = []
+        assigned = set()
+        for tier in tiers:
+            ids = [e for e in range(E)
+                   if e not in assigned and tier_of_rank[e] == tier]
+            if not ids:
+                continue
+            assigned.update(ids)
+            spec.append({"bits": tier, "group_size": group_size, "experts": ids})
+        if assigned != set(range(E)):
+            missing = [e for e in range(E) if e not in assigned]
+            spec.append({"bits": tiers[-1], "group_size": group_size,
+                         "experts": missing})
+        out[i["layer"]] = spec
+    return out
+
+
+def apply_usage_mix_4tier(
+    loaded,
+    orders: Dict[int, List[int]],
+    target_bytes: int,
+    layers_spec: str = "0--1",
+    group_size: int = 64,
+    tiers: List[int] = (8, 6, 4, 2),
+) -> Dict[int, List[dict]]:
+    """4-tier (8/6/4/2 bit) in-memory mixing with a memory target. The tier
+    bands follow the usage ranking (hot first) and the solver fits the
+    budget. Returns {layer: groups-spec} and swaps the modules."""
+    from .models.mixed_experts import MixedSwitchGLU
+
+    model = loaded.model
+    prefix = _layer_prefix(model)
+    n_layer = len(loaded.layers)
+    target_layers = set(parse_layers(layers_spec, n_layer))
+    moe_layers = sorted(set(_moe_layer_indices(loaded)) & target_layers)
+
+    layer_infos = []
+    for layer in moe_layers:
+        mlp = loaded.layers[layer].mlp
+        sm = mlp.switch_mlp
+        _, src_bits = _expert_bytes(mlp, layer, prefix, loaded.config.get("quantization"))
+        dims_in = sm.gate_proj.weight.shape[2]
+        dims_out = sm.gate_proj.weight.shape[1]
+        layer_infos.append({
+            "layer": layer, "E": mlp.num_experts,
+            "dims_out": dims_out, "dims_in": dims_in, "src_bits": src_bits,
+        })
+
+    spec = solve_tiers(layer_infos, target_bytes, tiers, group_size)
+
+    quant = loaded.config.get("quantization")
+    targs = getattr(model, "text_args", None)
+    hidden = getattr(targs, "hidden_size", None)
+    moe_hidden = getattr(targs, "moe_intermediate_size", None)
+
+    for layer in moe_layers:
+        mlp = loaded.layers[layer].mlp
+        sm = mlp.switch_mlp
+        if hasattr(sm, "groups"):
+            continue
+        groups_spec = spec[layer]
+        mixed_sm = MixedSwitchGLU(
+            hidden or mlp.gate.in_features, moe_hidden or hidden,
+            mlp.num_experts, groups_spec,
+        )
+        for gi, g in enumerate(mixed_sm.groups):
+            ids = g.expert_ids
+            gsize, bits = g.group_size, g.bits
+            idx = mx.array(ids)
+            for name in _PROJECTIONS:
+                proj = getattr(sm, name)
+                w = getattr(proj, "weight")
+                sc = getattr(proj, "scales", None)
+                b = getattr(proj, "biases", None)
+                if sc is None:
+                    src = w
+                else:
+                    qcfg = {}
+                    if isinstance(quant, dict):
+                        key = f"{prefix}.layers.{layer}.mlp.switch_mlp.{name}"
+                        ov = quant.get(key)
+                        if isinstance(ov, dict) and "bits" in ov:
+                            qcfg = ov
+                        else:
+                            qcfg = {k: quant[k] for k in ("group_size", "bits", "mode") if k in quant}
+                    src = mx.dequantize(
+                        w, sc, b,
+                        group_size=int(qcfg.get("group_size", 64)),
+                        bits=int(qcfg.get("bits", 4)),
+                        mode=qcfg.get("mode", "affine"),
+                    )
+                wq, scales, *biases = mx.quantize(src[idx], group_size=gsize, bits=bits)
+                mixed_sm.load_group(gi, name, {
+                    "weight": wq, "scales": scales,
+                    "biases": biases[0] if biases else None,
+                })
+        mlp.switch_mlp = mixed_sm
+
+    return spec

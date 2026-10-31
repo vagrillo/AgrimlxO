@@ -199,6 +199,10 @@ def _add_serve_args(p: argparse.ArgumentParser):
                         " the tail at --lo-bits; the checkpoint on disk stays uniform")
     p.add_argument("--top-m", dest="top_m", type=int, default=64,
                    help="hot experts per layer for --mixed-from-usage (default 64)")
+    p.add_argument("--mem-target", dest="mem_target", default=None,
+                   help="4-tier mode (8/6/4/2 bit): memory target for the loaded"
+                        " model, e.g. 24GB — the tier bands follow the usage"
+                        " ranking (hot first) and the solver fits the budget")
     p.add_argument("--hi-bits", dest="hi_bits", type=int, default=8)
     p.add_argument("--lo-bits", dest="lo_bits", type=int, default=4)
 
