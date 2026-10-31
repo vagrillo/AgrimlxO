@@ -221,6 +221,9 @@ class Engine:
         # forward con gli state ripristinati) e richiede --kache-restore
         self.kache = None
         self.kache_restore = False
+        self.image_token_id = getattr(
+            getattr(loaded.model, "args", None), "image_token_id", None
+        )
         # uso degli esperti (heatmap webui): accumulo globale single-model,
         # persistito per modello in ./expertusage/<model>.json
         text_args = getattr(loaded.model, "text_args", None)
@@ -278,38 +281,47 @@ class Engine:
         slot = self.slots[slot_id % len(self.slots)]
         reuse = self._reuse_len(slot, prompt)
         snap_restored = False
-        if reuse == 0 and conv_key and conv_key not in self.snapshots \
-                and self.kache is not None and images is None \
-                and self.kache_restore:
-            loaded = self.kache.load(conv_key)
-            if loaded is not None:
-                tokens_disk, states_disk = loaded
-                self.snapshots[conv_key] = {
-                    "tokens": tokens_disk, "states": states_disk,
-                    "uses": 1, "last_used": time.time(),
-                }
-        if reuse == 0 and conv_key and conv_key in self.snapshots:
-            snap = self.snapshots[conv_key]
-            snap_toks = snap["tokens"]
-            if (
-                len(snap_toks) >= self.min_snapshot_tokens
-                and len(snap_toks) < len(prompt)
-                and prompt[: len(snap_toks)] == snap_toks
-            ):
-                # continua dallo snapshot della conversazione: i layer
-                # ricorrenti (GDN) hanno lo stato esatto al confine del
-                # prefill, dove i token renderizzati sono stabili
-                try:
-                    caches = self.loaded.make_cache(self.cache_type)
-                    for c, (cls_name, st) in zip(caches, snap["states"]):
-                        c.state = _copy_state(st)
-                    reuse = len(snap_toks)
-                    snap_restored = True
-                    snap["uses"] += 1
-                    slot.caches = caches
-                    slot.tokens = prompt[:reuse]
-                except Exception:
-                    reuse = 0
+        # i pad gia' in cache non richiedono pixel_values nel delta: il
+        # restore e' possibile solo se il delta non contiene image token
+        # (allegati nuovi) — le pixel_values della richiesta coprono tutte
+        # le immagini e non corrisponderebbero ai soli pad del delta
+        img_tok = self.image_token_id
+        reuse_base = reuse
+        delta_imgs = img_tok is not None and img_tok in prompt[reuse_base:]
+        if reuse == 0 and conv_key and not delta_imgs:
+            # disco: riavvio simulato (--kache-restore, sperimentale)
+            if conv_key not in self.snapshots and self.kache is not None \
+                    and self.kache_restore and images is None:
+                loaded_snap = self.kache.load(conv_key)
+                if loaded_snap is not None:
+                    tokens_disk, states_disk = loaded_snap
+                    self.snapshots[conv_key] = {
+                        "tokens": tokens_disk, "states": states_disk,
+                        "uses": 1, "last_used": time.time(),
+                    }
+            # memoria: snapshot della conversazione
+            if conv_key in self.snapshots:
+                snap = self.snapshots[conv_key]
+                snap_toks = snap["tokens"]
+                if (
+                    len(snap_toks) >= self.min_snapshot_tokens
+                    and len(snap_toks) < len(prompt)
+                    and prompt[: len(snap_toks)] == snap_toks
+                ):
+                    # continua dallo snapshot della conversazione: i layer
+                    # ricorrenti (GDN) hanno lo stato esatto al confine del
+                    # prefill, dove i token renderizzati sono stabili
+                    try:
+                        caches = self.loaded.make_cache(self.cache_type)
+                        for c, (cls_name, st) in zip(caches, snap["states"]):
+                            c.state = _copy_state(st)
+                        reuse = len(snap_toks)
+                        snap_restored = True
+                        snap["uses"] += 1
+                        slot.caches = caches
+                        slot.tokens = prompt[:reuse]
+                    except Exception:
+                        reuse = 0
         if reuse > 0 and not snap_restored:
             caches = slot.caches
             prompt_left = prompt[reuse:]
@@ -370,7 +382,7 @@ class Engine:
             except Exception:
                 pass
 
-        def forward_chunked(segment: List[int]):
+        def forward_chunked(segment: List[int], images: Optional[dict] = None):
             nonlocal total, caches
             out = None
             # with images the prefill must be a single forward (the splice
@@ -412,15 +424,20 @@ class Engine:
                 self._moe_observability(pos0, total)
             return out
 
+        tail = prompt[snapshot_at:] if snapshot_at is not None else prompt
+        delta_has_images = (
+            self.image_token_id is not None
+            and self.image_token_id in tail
+        )
         do_snapshot = (
             conv_key is not None and snapshot_at is not None
             and self.min_snapshot_tokens <= snapshot_at < len(prompt)
-            and images is None
+            and not delta_has_images
         )
         if do_snapshot:
             # prefill in due fasi: lo snapshot cade al confine stabile (la
             # coda di generazione non fa parte del prefisso del turno dopo)
-            logits = forward_chunked(prompt[:snapshot_at])
+            logits = forward_chunked(prompt[:snapshot_at], images)
             snap_states = [
                 (type(c).__name__, _copy_state(c.state)) for c in caches
             ]
@@ -437,9 +454,9 @@ class Engine:
                 if oldest == conv_key or len(self.snapshots) == 1:
                     break
                 del self.snapshots[oldest]
-            logits = forward_chunked(prompt[snapshot_at:])
+            logits = forward_chunked(prompt[snapshot_at:], None)
         else:
-            logits = forward_chunked(prompt_left) if prompt_left else None
+            logits = forward_chunked(prompt_left, images) if prompt_left else None
         if logits is None:
             # prompt exactly equals the cached prefix: nothing to continue
             # from — re-prefill from scratch to get valid logits

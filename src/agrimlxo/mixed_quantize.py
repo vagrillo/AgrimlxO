@@ -479,8 +479,12 @@ def _expert_bytes(mlp, layer_idx: int, prefix: str, quant) -> Tuple[int, int]:
         if sc is not None:
             total += (int(sc.nbytes) + (int(getattr(proj, "biases").nbytes)
                         if getattr(proj, "biases", None) is not None else 0)) // E
+            # dims_in VERO (non packed): i bit si dedicono dal numero di
+            # valori logici, non dalle parole uint32
             dims_in = sc.shape[2] * getattr(proj, "group_size", 64)
-            src_bits_w += int(round(w.nbytes * 8 / (E * w.shape[1] * w.shape[2])))
+            src_bits_w += int(round(
+                w.nbytes * 8 / (E * w.shape[1] * dims_in)
+            ))
         else:
             dims_in = w.shape[2]
             src_bits_w += 16
@@ -711,11 +715,7 @@ def quant_matrix(loaded) -> Dict:
                 dims_in = sc.shape[2] * getattr(proj, "group_size", 64)
                 bits = int(round(
                     proj.weight.nbytes * 8
-                    / (proj.weight.shape[0] * proj.weight.shape[2]
-                       + proj.weight.shape[0] * sc.shape[2] * 16)
-                )) if False else int(round(
-                    proj.weight.nbytes * 8
-                    / (E * proj.weight.shape[1] * proj.weight.shape[2])
+                    / (E * proj.weight.shape[1] * dims_in)
                 ))
             else:
                 bits = 16

@@ -239,31 +239,45 @@ class ServerState:
         return self.tokenizer.apply_chat_template(flat, **kwargs)
 
     def conv_key_and_stable_len(self, messages: List[dict], prepared) -> tuple:
-        """Conversation fingerprint (all messages but the last user turn) and
-        the stable-boundary length: the token count of the render WITHOUT the
+        """Conversation key (progressive prefix matching: the newest stored
+        conversation whose message list prefixes the current one) and the
+        stable-boundary length: the token count of the render WITHOUT the
         generation suffix — the prefix the next turn reproduces exactly."""
         import hashlib
 
-        key_src = json.dumps(
-            [{k: v for k, v in m.items() if k in ("role", "content")}
-             for m in messages[:-1]],
-            ensure_ascii=False, sort_keys=True, default=str,
-        )
-        conv_key = hashlib.sha1(key_src.encode()).hexdigest()[:24]
+        def fp(msgs: List[dict]) -> str:
+            key_src = json.dumps(
+                [{k: v for k, v in m.items() if k in ("role", "content")}
+                 for m in msgs],
+                ensure_ascii=False, sort_keys=True, default=str,
+            )
+            return hashlib.sha1(key_src.encode()).hexdigest()[:24]
+
+        engine = self.engine
+        conv_key = None
+        for k in range(len(messages) - 1, 0, -1):
+            cand = fp(messages[:k])
+            if cand in engine.snapshots or (
+                engine.kache is not None and engine.kache.index.get(cand)
+            ):
+                conv_key = cand
+                break
+        if conv_key is None:
+            conv_key = fp(messages)  # nuova conversazione
+
+        # confine stabile per la CATTURA di questo turno: la fine dell'ultimo
+        # turno utente (il render senza il suffisso di generazione)
         snapshot_at = None
-        if self.engine.loaded.model.vision_tower is None or not isinstance(
-            prepared, dict
-        ):
-            try:
-                nogen_text = self.tokenizer.apply_chat_template(
-                    messages, add_generation_prompt=False
-                )
-                if isinstance(nogen_text, list):
-                    snapshot_at = len(nogen_text)
-                else:
-                    snapshot_at = len(self.tokenizer.encode(nogen_text))
-            except Exception:
-                snapshot_at = None
+        try:
+            nogen_text = self.tokenizer.apply_chat_template(
+                messages, add_generation_prompt=False
+            )
+            snapshot_at = (
+                len(nogen_text) if isinstance(nogen_text, list)
+                else len(self.tokenizer.encode(nogen_text))
+            )
+        except Exception:
+            snapshot_at = None
         return conv_key, snapshot_at
 
     def slot_acquire(self) -> "SlotHandle":
