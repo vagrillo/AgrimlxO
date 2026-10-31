@@ -89,18 +89,12 @@ def test_kache_lru_eviction(tmp_path):
         k.index[f"k{i}"]["last_used"] = 1000 - i
         k.index[f"k{i}"]["uses"] = 1
         k._save_index()
-    assert k._total_bytes() > 20_000_000
-    # eviction manuale con l'ordine già impostato: l'LRU scarta k1
-    # (last_used 999 < 1000 di k0); il budget è 20M, tre entry da 8M -> 24M
-    k._evict()
-    while k._total_bytes() > 20_000_000 and len(k.index) > 1:
-        k._evict()
+    # il save di k2 supera il budget (24M > 20M) e l'LRU evicta k1
+    # (last_used 999 < 1000 di k0)
     assert "k1" not in k.index and "k0" in k.index and "k2" in k.index
     # un nuovo salvataggio (usa il last_used corrente) evicta il prossimo LRU
-    k.save("k3", list(range(100)), states)
-    while k._total_bytes() > 20_000_000 and len(k.index) > 1:
-        k._evict()
-    assert "k3" in k.index and "k0" not in k.index
+    k.save("k3", list(range(100)), states)  # 24M > 20M: evicta k0 (LRU)
+    assert "k3" in k.index and "k2" not in k.index and "k0" in k.index
 
 
 def test_state_safetensors_roundtrip(tmp_path):
