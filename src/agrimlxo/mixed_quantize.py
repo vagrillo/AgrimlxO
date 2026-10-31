@@ -509,11 +509,14 @@ def _expert_bytes(mlp, layer_idx: int, prefix: str, quant) -> Tuple[int, int]:
 
 
 def _bytes_at(dims_out: int, dims_in: int, bits: int, group_size: int = 64) -> int:
-    """Packed weight + f16 scales/biases bytes of one expert at `bits`."""
+    """Packed weight + f16 scales/biases bytes of ONE expert at `bits`,
+    across ALL its projections (gate/up/down share the same in×out product:
+    senza il conteggio completo il solver sotto-stima di 1/3 e il target
+    non viene mai raggiunto — tutto resta al tier piu' alto)."""
     w = dims_out * dims_in * bits // 8
     groups = dims_in // group_size
     s = dims_out * groups * 2 * 2  # scales + biases f16
-    return w + s
+    return (w + s) * len(_PROJECTIONS)
 
 
 def solve_tiers(

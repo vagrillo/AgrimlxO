@@ -312,3 +312,36 @@ def test_mixed_model_with_expansion(tmp_path):
     assert r == "length"
     # the expansion recorded kept counts through the mixed layers
     assert rt._stats, "expected expansion stats on the mixed model"
+
+
+def test_solve_tiers_respects_mem_target():
+    """Regression: _bytes_at counted ONE projection per expert instead of
+    all three (gate/up/down) — the budget never bound and every layer came
+    out at the top tier, overshooting the mem target."""
+    from agrimlxo.mixed_quantize import solve_tiers, _bytes_at
+
+    E, dims_out, dims_in = 16, 64, 256
+    infos = [
+        {"layer": l, "E": E, "dims_out": dims_out, "dims_in": dims_in,
+         "src_bits": 8}
+        for l in range(2)
+    ]
+    all_8bit = sum(_bytes_at(i["dims_out"], i["dims_in"], 8) for i in infos) * E
+    target = int(all_8bit * 0.5)  # half the 8-bit size: bands MUST appear
+
+    spec = solve_tiers(infos, target)
+
+    total = sum(
+        _bytes_at(i["dims_out"], i["dims_in"], g["bits"]) * len(g["experts"])
+        for i in infos for g in spec[i["layer"]]
+    )
+    assert total <= target, "solver exceeded the mem target"
+    # hot-first: rank 0 gets the highest tier, cold tail the lowest
+    assert spec[0][0]["bits"] == 8 and spec[0][0]["experts"][0] == 0
+    assert spec[0][-1]["bits"] == min(2, 8)
+    # contiguous rank bands covering every expert
+    for bands in spec.values():
+        ids = [e for g in bands for e in g["experts"]]
+        assert ids == sorted(ids) and len(ids) == E
+        bits_seq = [g["bits"] for g in bands]
+        assert bits_seq == sorted(bits_seq, reverse=True)
