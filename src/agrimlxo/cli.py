@@ -339,7 +339,10 @@ def cmd_serve(args, argv: List[str]):
     )
 
     _log(f"loading model: {model_path}")
-    loaded = LoadedModel(model_path, expansion=expansion)
+    loaded = LoadedModel(
+        model_path, expansion=expansion,
+        lazy=bool(getattr(args, "mixed_from_usage", False)),
+    )
     tokenizer = Tokenizer(model_path, args.chat_template)
 
     if expansion is not None and (expansion.active or expansion.reduce_active):
@@ -409,6 +412,8 @@ def cmd_serve(args, argv: List[str]):
 
     if getattr(args, "mixed_from_usage", False):
         from .mixed_quantize import ExpertQuantCache, apply_usage_mix_in_memory
+
+
 
         quant_cache = ExpertQuantCache(
             "./expertcache",

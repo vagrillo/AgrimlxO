@@ -205,6 +205,10 @@ def _add_serve_args(p: argparse.ArgumentParser):
                         " ranking (hot first) and the solver fits the budget")
     p.add_argument("--hi-bits", dest="hi_bits", type=int, default=8)
     p.add_argument("--lo-bits", dest="lo_bits", type=int, default=4)
+    p.add_argument("--save-mixed", dest="save_mixed", default=None, metavar="DIR",
+                   help="save the mixed model to DIR after the load-time mix"
+                        " (the next boots load it directly: -m DIR — no re-mix,"
+                        " no 28GB peak)")
 
     # ---- vision / pdf ----
     p.add_argument("--pdf-dpi", dest="pdf_dpi", type=int, default=100,

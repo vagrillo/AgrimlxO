@@ -669,6 +669,9 @@ def apply_usage_mix_4tier(
         sm = mlp.switch_mlp
         if hasattr(sm, "groups"):
             continue
+        # lazy: materializza SOLO i parametri di questo layer (i parametri
+        # sono lazy-backed dal safetensors fino a eval)
+        mx.eval(sm.parameters())
         groups_spec = spec[layer]
         mixed_sm = MixedSwitchGLU(
             hidden or mlp.gate.in_features, moe_hidden or hidden,
@@ -718,6 +721,9 @@ def apply_usage_mix_4tier(
                     "biases": tensors.get(f"{name}.biases"),
                 })
         mlp.switch_mlp = mixed_sm
+        # libera il layer sorgente 6-bit materializzato
+        if hasattr(mx, "clear_cache"):
+            mx.clear_cache()
 
     # rilascia la memoria dei vecchi tensori 6-bit sostituiti
     if hasattr(mx, "clear_cache"):
