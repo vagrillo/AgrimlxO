@@ -133,7 +133,9 @@ llama.cpp-server-style surface: `-m/--model`, `--host/--port`, `--api-key`,
 `--reasoning-budget N` (AgrillaMoE: force a wrap-up message when the
 `<think>` phase exceeds the budget), `--reasoning-format auto|none`
 (split `<think>` into `reasoning_content`), `--chat-template`,
-`--no-moe-expansion` (+ `AGRIMLXO_NO_MOE_EXPANSION=1`) and the whole
+`--verbose/-v` (verbose startup: per-file/per-layer progress, phase
+timings, module INFO logs), `--no-moe-expansion` (+ `AGRIMLXO_NO_MOE_EXPANSION=1`)
+and the whole
 `--moe-*` family above. `agrimlxo download <repo>` and `agrimlxo list`
 manage local models; without `-m` the server offers the locally found ones.
 

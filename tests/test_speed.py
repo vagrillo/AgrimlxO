@@ -57,3 +57,22 @@ def test_warmup_keeps_stats_clean_and_generation_working(tmp_path):
     all_counts = mx.concatenate(counts)
     mx.eval(all_counts)
     assert float(all_counts.mean()) == 8.0
+
+
+def test_warmup_progress_reports_phases(tmp_path):
+    d = build_toy_model(tmp_path, n_expert=8, top_k=2)
+    loaded = LoadedModel(d)
+    engine = Engine(loaded, ToyTokenizer(), ctx_size=128)
+
+    lines = []
+    engine.warmup(progress=lines.append)
+    assert any("warmup: prefill" in l and "ok" in l for l in lines)
+    assert any("greedy decode" in l for l in lines)
+    assert any("sampled decode" in l for l in lines)
+    # phase closers carry the measured throughput
+    assert any("tok/s" in l for l in lines)
+
+    # progress is optional: the default silent path still measures
+    w = engine.warmup()
+    assert w["decode_tps"] > 0
+    assert w["prefill_tps"] > 0

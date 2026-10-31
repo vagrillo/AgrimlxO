@@ -135,6 +135,7 @@ class LoadedModel:
         model_path: Path,
         expansion: Optional[MoERuntime] = None,
         lazy: bool = False,
+        log=None,
     ):
         self.path = model_path
         self.config = load_config(model_path)
@@ -166,7 +167,9 @@ class LoadedModel:
         if not weight_files:
             raise FileNotFoundError(f"no model*.safetensors found in {model_path}")
         weights = {}
-        for wf in weight_files:
+        for i, wf in enumerate(weight_files, 1):
+            if log:
+                log(f"load: weights {i}/{len(weight_files)} ({wf.name})")
             weights.update(mx.load(wf))
 
         if hasattr(model, "sanitize"):
@@ -175,8 +178,12 @@ class LoadedModel:
         _quantize_model(model, self.config, weights)
 
         model.eval()
+        if log:
+            log("load: load_weights (strict)")
         model.load_weights(list(weights.items()), strict=True)
         if not lazy:
+            if log:
+                log("load: eval (materializing all parameters)")
             mx.eval(model.parameters())
         self.model = model
 

@@ -115,7 +115,9 @@ def _add_serve_args(p: argparse.ArgumentParser):
     p.add_argument("--threads", type=int, default=None, help="(no-op, MLX manages its own dispatch)")
     p.add_argument("--mlock", action="store_true", default=False, help="(no-op: weights are mmap'd by MLX)")
     p.add_argument("--no-mmap", action="store_true", default=False, help="(no-op)")
-    p.add_argument("--verbose", "-v", action="store_true", default=False, help="verbose logging")
+    p.add_argument("--verbose", "-v", action="store_true", default=False,
+                   help="verbose startup logging (phases, per-layer progress)"
+                        " + uvicorn info")
 
     # ---- sampling defaults (llama.cpp style) ----
     p.add_argument("--temp", "--temperature", dest="temp", type=float, default=0.8)

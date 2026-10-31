@@ -2,8 +2,10 @@
 """AgrimlxO command-line entry points: serve / download / list."""
 
 import atexit
+import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -315,6 +317,19 @@ def cmd_serve(args, argv: List[str]):
     print(_BANNER)
     _log(f"agrimlxo {__version__}  (MLX server, MoE expert expansion)")
 
+    # -v: dettaglio startup (per-file/per-layer/per-fase) + logging INFO dei
+    # moduli (es. la riga di memoria della passata mixed); senza -v i moduli
+    # loggano solo warning e lo startup resta ai _log di fase.
+    vlog = None
+    if getattr(args, "verbose", False):
+        logging.basicConfig(
+            level=logging.INFO,
+            stream=sys.stderr,
+            format="%(levelname)s %(name)s: %(message)s",
+        )
+        vlog = _log
+    t_start = time.perf_counter()
+
     if fast_moe_prefill_requested(args):
         if kernels.native_available():
             kernels.set_fast_prefill(True)
@@ -339,11 +354,16 @@ def cmd_serve(args, argv: List[str]):
     )
 
     _log(f"loading model: {model_path}")
+    t_load = time.perf_counter()
     loaded = LoadedModel(
         model_path, expansion=expansion,
         lazy=bool(getattr(args, "mixed_from_usage", False)),
+        log=vlog,
     )
     tokenizer = Tokenizer(model_path, args.chat_template)
+    load_s = time.perf_counter() - t_load
+    if vlog:
+        vlog(f"load: model + tokenizer in {load_s:.1f}s")
 
     if expansion is not None and (expansion.active or expansion.reduce_active):
         for line in expansion.banner_lines():
@@ -410,10 +430,11 @@ def cmd_serve(args, argv: List[str]):
 
     atexit.register(engine.usage.flush)
 
+    mixed_s = 0.0
     if getattr(args, "mixed_from_usage", False):
         from .mixed_quantize import ExpertQuantCache, apply_usage_mix_in_memory
 
-
+        t_mixed = time.perf_counter()
 
         quant_cache = ExpertQuantCache(
             "./expertcache",
@@ -438,6 +459,7 @@ def cmd_serve(args, argv: List[str]):
             spec = apply_usage_mix_4tier(
                 loaded, orders, target_bytes=_parse_bytes(args.mem_target),
                 layers_spec="0--1", quant_cache=quant_cache,
+                progress=vlog,
             )
             _log(f"mixed-from-usage: 4 tier (8/6/4/2) su {len(spec)} layer,"
                  f" target {args.mem_target}")
@@ -446,11 +468,13 @@ def cmd_serve(args, argv: List[str]):
                 loaded, orders, top_m=args.top_m,
                 hi_bits=args.hi_bits, lo_bits=args.lo_bits,
                 quant_cache=quant_cache,
+                progress=vlog,
             )
             _log(
                 f"mixed-from-usage: {len(spec)} MoE layer quantizzati per uso"
                 f" (top-{args.top_m} @ {args.hi_bits}b, coda @ {args.lo_bits}b)"
             )
+        mixed_s = time.perf_counter() - t_mixed
 
     if not args.no_compile:
         from .speed import compile_ffn
@@ -458,8 +482,17 @@ def cmd_serve(args, argv: List[str]):
         n = compile_ffn(engine.loaded.model)
         if n:
             _log(f"speed: mx.compile applied to {n} FFN sub-calls")
+    warmup_s = 0.0
     if not args.no_warmup:
-        w = engine.warmup()
+        # sempre visibile: il primo eval del warmup paga la JIT dei kernel
+        # compilati ed è il lungo silenzio che sembra un hang
+        _log(
+            "speed: warmup — the first eval pays the JIT compile of the"
+            " compiled FFN sub-calls (can take minutes on a big model)"
+        )
+        t_warm = time.perf_counter()
+        w = engine.warmup(progress=vlog)
+        warmup_s = time.perf_counter() - t_w
         mem = w.get("memory") or {}
         _log(
             "speed: warmup decode — greedy {g} tok/s | sampled {s} tok/s"
@@ -473,6 +506,16 @@ def cmd_serve(args, argv: List[str]):
                 "memory: active {active_gb} GB, cache {cache_gb} GB,"
                 " peak {peak_gb} GB".format(**mem)
             )
+
+    parts = [f"load {load_s:.1f}s"]
+    if mixed_s:
+        parts.append(f"mixed {mixed_s:.1f}s")
+    if warmup_s:
+        parts.append(f"warmup {warmup_s:.1f}s")
+    _log(
+        f"startup: ready in {time.perf_counter() - t_start:.1f}s"
+        f" ({', '.join(parts)})"
+    )
 
     run_server(args, engine, tokenizer)
 

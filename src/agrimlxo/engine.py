@@ -635,11 +635,19 @@ class Engine:
 
     # -- warmup ---------------------------------------------------------------
 
-    def warmup(self, prompt_len: int = 16, gen_tokens: int = 32):
+    def warmup(self, prompt_len: int = 16, gen_tokens: int = 32, progress=None):
         """Short dummy generation before serving: pays the Metal kernel
         JIT / autotune / first-trace costs up front, MEASURES the raw engine
         decode speed (no client in the way) and logs memory. Expansion
-        observability is suspended."""
+        observability is suspended. ``progress`` (optional callable) gets
+        one line per phase: the two blocking ``mx.eval`` are where the JIT
+        compile of the mx.compile'd FFN sub-calls stalls."""
+        if progress:
+            progress(
+                f"warmup: prefill {prompt_len} tok (first forward — pays the"
+                " JIT compile of the compiled FFN sub-calls; the long silence"
+                " starts here)"
+            )
         rt = self.runtime
         if rt is not None:
             rt.suspended = True
@@ -660,9 +668,16 @@ class Engine:
                     mx.eval(out)
             mx.eval(out)
             prefill_tps = prompt_len / max(1e-6, time.perf_counter() - t0)
+            if progress:
+                progress(f"warmup: prefill ok ({prefill_tps:.1f} tok/s)")
 
             # raw decode loop, greedy, no sampling chain, no streaming: the
             # engine's own ceiling (mlx-lm-comparable)
+            if progress:
+                progress(
+                    f"warmup: greedy decode {gen_tokens} tok (the decode-shape"
+                    " JIT compile is paid at this phase's single eval)"
+                )
             t0 = time.perf_counter()
             logits = out
             for _ in range(gen_tokens):
@@ -673,6 +688,8 @@ class Engine:
             mx.eval(logits)
             decode_s = time.perf_counter() - t0
             decode_tps = gen_tokens / max(1e-6, decode_s)
+            if progress:
+                progress(f"warmup: greedy decode ok ({decode_tps:.1f} tok/s)")
 
             # same loop WITH the webui-like sampler chain: isolates the
             # sampling overhead per token
@@ -686,6 +703,8 @@ class Engine:
             mx.eval(logits)
             sampled_s = time.perf_counter() - t0
             sampled_tps = gen_tokens / max(1e-6, sampled_s)
+            if progress:
+                progress(f"warmup: sampled decode ok ({sampled_tps:.1f} tok/s)")
 
             slot.caches = None
             slot.tokens = []

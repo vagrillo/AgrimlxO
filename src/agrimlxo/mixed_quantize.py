@@ -366,6 +366,7 @@ def apply_usage_mix_in_memory(
     hi_group_size: int = 64,
     lo_group_size: int = 64,
     quant_cache: Optional[ExpertQuantCache] = None,
+    progress=None,
 ) -> Dict[int, List[dict]]:
     """Load-time per-expert mixed quantization driven by the usage ranking.
 
@@ -373,6 +374,9 @@ def apply_usage_mix_in_memory(
     selected MoE layers are dequantized in memory, re-quantized into hot/cold
     groups per the ranking, and the module is swapped for MixedSwitchGLU.
     No disk round-trip: the uniform checkpoint remains the single source.
+
+    ``progress`` (optional callable) gets one line per layer so a slow
+    dequantize/requantize pass doesn't look hung.
 
     Returns {layer: groups-spec} (the moe_expert_quant annotation).
     """
@@ -388,7 +392,8 @@ def apply_usage_mix_in_memory(
     hidden = getattr(targs, "hidden_size", None)
     moe_hidden = getattr(targs, "moe_intermediate_size", None)
 
-    for layer in sorted(set(_moe_layer_indices(loaded)) & target_layers):
+    todo = sorted(set(_moe_layer_indices(loaded)) & target_layers)
+    for li, layer in enumerate(todo, 1):
         mlp = loaded.layers[layer].mlp
         sm = mlp.switch_mlp
         if hasattr(sm, "groups"):
@@ -405,6 +410,9 @@ def apply_usage_mix_in_memory(
         _, src_bits = _expert_bytes(mlp, layer, prefix, quant)
         hi_b = min(hi_bits, src_bits)
         lo_b = min(lo_bits, src_bits)
+        if progress:
+            progress(f"mixed: layer {li}/{len(todo)}"
+                     f" (top-{min(top_m, E)} @ {hi_b}b, coda @ {lo_b}b)")
 
         groups_spec = [
             {"bits": hi_b, "group_size": hi_group_size,
@@ -596,10 +604,12 @@ def apply_usage_mix_4tier(
     group_size: int = 64,
     tiers: List[int] = (8, 6, 4, 2),
     quant_cache: Optional[ExpertQuantCache] = None,
+    progress=None,
 ) -> Dict[int, List[dict]]:
     """4-tier (8/6/4/2 bit) in-memory mixing with a memory target. The tier
     bands follow the usage ranking (hot first) and the solver fits the
-    budget. Returns {layer: groups-spec} and swaps the modules."""
+    budget. ``progress`` (optional callable) gets one line per layer.
+    Returns {layer: groups-spec} and swaps the modules."""
     from .models.mixed_experts import MixedSwitchGLU
 
     model = loaded.model
@@ -664,15 +674,23 @@ def apply_usage_mix_4tier(
     hidden = getattr(targs, "hidden_size", None)
     moe_hidden = getattr(targs, "moe_intermediate_size", None)
 
-    for layer in moe_layers:
+    for li, layer in enumerate(moe_layers, 1):
         mlp = loaded.layers[layer].mlp
         sm = mlp.switch_mlp
         if hasattr(sm, "groups"):
             continue
+        groups_spec = spec[layer]
+        if progress:
+            tiers_s = "/".join(str(g["bits"]) for g in groups_spec)
+            cache_s = (
+                f", cache {quant_cache.hits}h/{quant_cache.misses}m"
+                if quant_cache is not None else ""
+            )
+            progress(f"mixed 4-tier: layer {li}/{len(moe_layers)}"
+                     f" ({tiers_s} bit{cache_s})")
         # lazy: materializza SOLO i parametri di questo layer (i parametri
         # sono lazy-backed dal safetensors fino a eval)
         mx.eval(sm.parameters())
-        groups_spec = spec[layer]
         mixed_sm = MixedSwitchGLU(
             hidden or mlp.gate.in_features, moe_hidden or hidden,
             mlp.num_experts, groups_spec,
