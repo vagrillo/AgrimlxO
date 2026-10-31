@@ -492,7 +492,7 @@ def create_app(state: ServerState) -> FastAPI:
             "model_name": state.model_name,
             "has_chat_template": state.tokenizer.has_chat_template,
             "reasoning_format": a.reasoning_format,
-            "no_thinking": a.no_thinking,
+            "no_thinking": getattr(a, "no_thinking", False),
             "moe_expansion": moe,
             "tools": state.tools.names() if state.tools else [],
             "pdf_dpi": getattr(state.args, "pdf_dpi", 100),
