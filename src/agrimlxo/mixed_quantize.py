@@ -72,6 +72,7 @@ class ExpertQuantCache:
 
     def __init__(self, cache_dir: str, budget_bytes: int = 8 << 30):
         self.dir = Path(cache_dir)
+        self.dir.mkdir(parents=True, exist_ok=True)
         self.budget = int(budget_bytes)
         self.hits = 0
         self.misses = 0
