@@ -16,6 +16,7 @@ Single-model, single-stream MLX generation with:
 
 import sys
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Iterator, List, Optional, Tuple
@@ -223,10 +224,16 @@ class Engine:
         # uso degli esperti (heatmap webui): accumulo globale single-model,
         # persistito per modello in ./expertusage/<model>.json
         text_args = getattr(loaded.model, "text_args", None)
+        # ./expertusage/<modello>.json — un file per modello
+        safe = "".join(
+            ch if ch.isalnum() or ch in "._-" else "__" for ch in model_name
+        ) or "model"
+        usage_file = Path(usage_dir) / f"{safe}.json"
+        Path(usage_dir).mkdir(parents=True, exist_ok=True)
         self.usage = ExpertUsage(
             getattr(text_args, "num_hidden_layers", 0) or 1,
             getattr(text_args, "num_experts", 0) or 1,
-            persist_path=usage_dir,
+            persist_path=str(usage_file),
             model_name=model_name,
         )
         from .moe_expansion import set_usage_sink
