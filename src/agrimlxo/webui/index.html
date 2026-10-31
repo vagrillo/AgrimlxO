@@ -127,6 +127,26 @@ textarea { resize: vertical; min-height: 64px; }
 .bubble blockquote { border-left: 3px solid var(--accent); margin: .4em 0; padding-left: 10px; color: var(--text2); }
 .math-raw { font-family: var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
 .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+.floating {
+  position: fixed; top: 10%; left: 25%; width: 50%; max-height: 80%;
+  background: var(--bg2); border: 1px solid var(--accent); border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.6); z-index: 40;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.floating.hidden { display: none; }
+.floating.minimized { max-height: none; }
+.floating.minimized .floatbody { display: none; }
+.floathead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: var(--bg3); cursor: move; user-select: none;
+  font-weight: 700; font-size: 13px; color: var(--accent2);
+  border-bottom: 1px solid var(--border);
+}
+.floatbtns { display: flex; gap: 6px; }
+.floatbtn { background: none; border: 1px solid var(--border); color: var(--text2);
+  border-radius: 6px; padding: 1px 8px; cursor: pointer; font-size: 12px; }
+.floatbtn:hover { color: var(--text); border-color: var(--text2); }
+.floatbody { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .svgcard { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; background: var(--bg2); overflow: hidden; }
 .svgcard .svghead { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; font-size: 11px; font-weight: 700; color: var(--accent2); border-bottom: 1px solid var(--border); }
 .svgcard .svghead button { background: none; border: 1px solid var(--border); color: var(--text2); border-radius: 6px; padding: 2px 8px; cursor: pointer; font-size: 11px; }
@@ -257,8 +277,15 @@ textarea { resize: vertical; min-height: 64px; }
     <div class="moeinfo" id="moedefault">…</div>
   </aside>
 
-  <aside id="usagepanel" class="hidden">
-    <h3>Expert usage heatmap</h3>
+  <div id="usagepanel" class="floating hidden">
+    <div class="floathead" id="usagehead">
+      <span>📊 Expert usage</span>
+      <span class="floatbtns">
+        <button class="floatbtn" id="usagemin" title="minimize">—</button>
+        <button class="floatbtn" id="usageclose" title="close">✕</button>
+      </span>
+    </div>
+    <div class="floatbody">
     <div class="switch">
       <span class="uscope" data-s="all" style="cursor:pointer;font-weight:700;color:var(--accent2)">All-time</span>
       <span style="color:var(--text2)">/</span>
@@ -270,7 +297,8 @@ textarea { resize: vertical; min-height: 64px; }
     <canvas id="usagecanvas" width="640" height="520" style="width:100%;background:#000;border-radius:8px;border:1px solid var(--border)"></canvas>
     <div class="moeinfo" id="usageinfo">…</div>
     <button class="panel-btn ghost" id="usagereset" style="display:none">Reset session counter (trip reset)</button>
-  </aside>
+    </div>
+  </div>
 
   <aside id="moepanel" class="hidden">
     <h3>MoE expansion runtime</h3>
@@ -749,6 +777,7 @@ async function streamAssistant(apiContent){
   msg.div.appendChild(liveEl);
   let body = null, contentHTML = "", contentRaw = "", reasoningRaw = "";
   generating = true; setSend();
+  if (usageTimer) { clearInterval(usageTimer); usageTimer = setInterval(loadUsage, 700); }
   const ctrl = new AbortController(); abort = ctrl;
   t0 = performance.now(); tgen = 0; tprompt = 0; usageInfo = null;
   nLiveTok = 0; tFirstTok = 0; livePrefillTps = null;
@@ -848,6 +877,7 @@ async function streamAssistant(apiContent){
     }
   } finally {
     generating = false; abort = null; setSend();
+    if (usageTimer) { clearInterval(usageTimer); usageTimer = setInterval(loadUsage, 2000); }
     document.querySelectorAll(".cursor").forEach(c => c.remove());
     liveEl = null; nLiveTok = 0; tFirstTok = 0; livePrefillTps = null;
     liveExperts = null; liveExpertsMean = null;
@@ -951,13 +981,42 @@ if (chats.length) resumeChat(chats[0].id);
 else renderHistory();
 // ---------- expert usage heatmap ----------
 let usageScope = "all", usageTimer = null;
-$("usagebtn").addEventListener("click", () => {
+function setUsageOpen(open){
   const p = $("usagepanel");
-  p.classList.toggle("hidden");
-  $("usagebtn").classList.toggle("active");
-  if (p.classList.contains("hidden")) { clearInterval(usageTimer); usageTimer = null; }
-  else { loadUsage(); usageTimer = setInterval(loadUsage, 2000); }
-});
+  p.classList.toggle("hidden", !open);
+  $("usagebtn").classList.toggle("active", open);
+  p.classList.remove("minimized");
+  clearInterval(usageTimer);
+  if (open) {
+    loadUsage();
+    usageTimer = setInterval(loadUsage, generating ? 700 : 2000);
+  }
+}
+$("usagebtn").addEventListener("click", () =>
+  setUsageOpen($("usagepanel").classList.contains("hidden")));
+$("usageclose").addEventListener("click", () => setUsageOpen(false));
+$("usagemin").addEventListener("click", () =>
+  $("usagepanel").classList.toggle("minimized"));
+// drag dalla title bar
+(() => {
+  const head = $("usagehead"), panel = $("usagepanel");
+  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+  head.addEventListener("pointerdown", e => {
+    if (e.target.closest(".floatbtn")) return;
+    dragging = true;
+    const r = panel.getBoundingClientRect();
+    sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+    panel.style.left = r.left + "px"; panel.style.top = r.top + "px";
+    panel.style.right = "auto"; panel.style.transform = "none";
+    head.setPointerCapture(e.pointerId);
+  });
+  head.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    panel.style.left = Math.max(0, ox + e.clientX - sx) + "px";
+    panel.style.top = Math.max(0, oy + e.clientY - sy) + "px";
+  });
+  head.addEventListener("pointerup", () => dragging = false);
+})();
 document.querySelectorAll(".uscope").forEach(el => el.addEventListener("click", () => {
   usageScope = el.dataset.s;
   document.querySelectorAll(".uscope").forEach(e => {

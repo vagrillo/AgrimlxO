@@ -369,7 +369,12 @@ def cmd_serve(args, argv: List[str]):
         prefill_step_size=args.batch_size,
         parallel=args.parallel,
         cache_type=args.cache_type_k,
+        usage_dir="./expertusage",
+        model_name=model_label,
     )
+    import atexit
+
+    model_label = str(args.model or "model")
     engine.progress_cb = progress_cb
     if getattr(args, "kache", False):
         from .kache import Kache
@@ -397,6 +402,8 @@ def cmd_serve(args, argv: List[str]):
         )
 
     from .server import run_server
+
+    atexit.register(engine.usage.flush)
 
     if not args.no_compile:
         from .speed import compile_ffn

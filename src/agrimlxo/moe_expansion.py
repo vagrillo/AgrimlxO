@@ -40,6 +40,9 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import time
+from pathlib import Path
+
 import mlx.core as mx
 import numpy as np
 
@@ -69,7 +72,13 @@ class ExpertUsage:
     raises the routed budget above the native top-K.
     """
 
-    def __init__(self, n_layer: int, n_expert: int):
+    def __init__(
+        self,
+        n_layer: int,
+        n_expert: int,
+        persist_path: Optional[str] = None,
+        model_name: str = "",
+    ):
         self.n_layer = n_layer
         self.n_expert = n_expert
         self.counts_all = np.zeros((n_layer, n_expert), dtype=np.int64)
@@ -77,6 +86,58 @@ class ExpertUsage:
         self.tokens_all = 0
         self.tokens_session = 0
         self._lazy: deque = deque()
+        # persistenza all-time per modello (./expertusage/<model>.json):
+        # caricata all'avvio, salvata throttled durante il drain e flushata
+        # allo shutdown
+        self.persist_path = Path(persist_path) if persist_path else None
+        self.model_name = model_name
+        self._last_save = 0.0
+        if self.persist_path:
+            self._load()
+
+    def _load(self):
+        import json
+
+        try:
+            if self.persist_path.exists():
+                data = json.loads(self.persist_path.read_text())
+                counts = np.asarray(data.get("counts_all"), dtype=np.int64)
+                if counts.shape == self.counts_all.shape:
+                    self.counts_all = counts
+                    self.tokens_all = int(data.get("tokens_all", 0))
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "expert usage load %s: %s", self.persist_path, e
+            )
+
+    def _persist(self):
+        import json
+
+        if not self.persist_path:
+            return
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            self.persist_path.write_text(json.dumps({
+                "model": self.model_name,
+                "layers": self.n_layer,
+                "experts": self.n_expert,
+                "tokens_all": self.tokens_all,
+                "counts_all": self.counts_all.tolist(),
+            }))
+            self._last_save = time.time()
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "expert usage save %s: %s", self.persist_path, e
+            )
+
+    def flush(self):
+        """Save the all-time counts now (shutdown / explicit)."""
+        if self.persist_path:
+            self._persist()
 
     def observe_lazy(self, layer_idx: int, ids: mx.array, k_native: int):
         self._lazy.append((layer_idx, ids, min(k_native, ids.shape[-1])))
@@ -95,6 +156,9 @@ class ExpertUsage:
             np.add.at(self.counts_session[layer_idx], vals, 1)
             self.tokens_all += 1
             self.tokens_session += 1
+            # salvataggio throttled (30s) durante il drain
+            if self.persist_path and time.time() - self._last_save > 30:
+                self._persist()
 
     def reset_session(self):
         self.counts_session[:] = 0

@@ -527,6 +527,12 @@ def create_app(state: ServerState) -> FastAPI:
             "no_thinking": getattr(a, "no_thinking", False),
             "moe_expansion": moe,
             "tools": state.tools.names() if state.tools else [],
+            "expert_usage_file": (
+                str(state.engine.usage.persist_path)
+                if state.engine.usage is not None
+                and getattr(state.engine.usage, "persist_path", None)
+                else None
+            ),
             "pdf_dpi": getattr(state.args, "pdf_dpi", 100),
             "agrimlxo_version": __version__,
             "server": "AgrimlxO",

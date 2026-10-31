@@ -192,6 +192,8 @@ class Engine:
         parallel: int = 1,
         cache_type: str = "auto",
         wrapup_text: str = _DEFAULT_WRAPUP,
+        usage_dir: str = "./expertusage",
+        model_name: str = "",
     ):
         self.loaded = loaded
         self.model = loaded.model
@@ -218,11 +220,14 @@ class Engine:
         # forward con gli state ripristinati) e richiede --kache-restore
         self.kache = None
         self.kache_restore = False
-        # uso degli esperti (heatmap webui): accumulo globale single-model
+        # uso degli esperti (heatmap webui): accumulo globale single-model,
+        # persistito per modello in ./expertusage/<model>.json
         text_args = getattr(loaded.model, "text_args", None)
         self.usage = ExpertUsage(
             getattr(text_args, "num_hidden_layers", 0) or 1,
             getattr(text_args, "num_experts", 0) or 1,
+            persist_path=usage_dir,
+            model_name=model_name,
         )
         from .moe_expansion import set_usage_sink
 
