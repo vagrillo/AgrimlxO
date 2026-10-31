@@ -661,6 +661,31 @@ def create_app(state: ServerState) -> FastAPI:
             raise HTTPException(404, "usage collector unavailable")
         return u.snapshot(session=(scope == "session"))
 
+    @app.get("/moe/usage/ranking")
+    def moe_usage_ranking(_: None = Depends(auth)):
+        """Per-layer expert ranking (hot first) — the input format of
+        `agrimlxo mixed-quantize --order expert-order.txt`."""
+        u = state.engine.usage
+        if u is None:
+            raise HTTPException(404, "usage collector unavailable")
+        counts = u.counts_all
+        ranking = []
+        for l in range(u.n_layer):
+            order = sorted(range(u.n_expert), key=lambda e: (-counts[l][e], e))
+            ranking.append({
+                "layer": l,
+                "order": order,
+                "counts": [int(counts[l][e]) for e in order],
+            })
+        return {
+            "layers": u.n_layer, "experts": u.n_expert,
+            "tokens_all": u.tokens_all,
+            "ranking": ranking,
+            "order_file": "\n".join(
+                ",".join(str(e) for e in r["order"]) for r in ranking
+            ),
+        }
+
     @app.post("/moe/usage/reset")
     def moe_usage_reset(_: None = Depends(auth)):
         u = state.engine.usage

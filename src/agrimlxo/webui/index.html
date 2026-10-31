@@ -294,7 +294,9 @@ textarea { resize: vertical; min-height: 64px; }
     <div class="moeinfo">Rows: experts (0..255) · Columns: layers (0..39) ·
       brightness = usage share; the hottest LEDs saturate to white. Only the
       native top-K experts count (expansion ranks excluded).</div>
-    <canvas id="usagecanvas" width="640" height="520" style="width:100%;background:#000;border-radius:8px;border:1px solid var(--border)"></canvas>
+    <canvas id="usagecanvas" width="640" height="520" style="width:100%;background:#000;border-radius:8px;border:1px solid var(--border);cursor:crosshair"></canvas>
+    <div class="moeinfo" id="layerdetail" style="display:none;max-height:180px;overflow-y:auto"></div>
+    <button class="panel-btn ghost" id="usageexport">⬇ Export expert-order.txt</button>
     <div class="switch"><span>Normalize per layer</span><input type="checkbox" id="usagelperlayer" checked></div>
     <div class="setting"><div class="row"><span>Contrast (gamma)</span><span class="val" id="usagegamma-v"></span></div>
       <input type="range" id="usagegamma" min="0.2" max="10" step="0.1"></div>
@@ -1088,6 +1090,29 @@ $("usagegamma").addEventListener("input", e => {
   $("usagegamma-v").textContent = usageGamma;
   localStorage.setItem("agrimlxo.usagegamma", usageGamma);
   loadUsage();
+});
+$("usagecanvas").addEventListener("click", async e => {
+  const cv = $("usagecanvas"), r = cv.getBoundingClientRect();
+  const l = Math.floor((e.clientX - r.left) / r.width * cv.width * L_scale());
+  const d = await (await fetch("/moe/usage/ranking")).json();
+  const row = d.ranking[l];
+  if (!row) return;
+  const total = row.counts.reduce((a, b) => a + b, 0) || 1;
+  const hot = row.order.slice(0, 12).map((eId, i) =>
+    `<div>#${i + 1} expert <b>${eId}</b> — ${row.counts[i]} tk (${(row.counts[i] * 100 / total).toFixed(1)}%)</div>`).join("");
+  const el = $("layerdetail");
+  el.style.display = "";
+  el.innerHTML = `<b>Layer ${l}</b> — esperti per uso (top 12 su ${d.experts})` + hot;
+});
+function L_scale(){ const cv = $("usagecanvas"); return cv.width / cv.getBoundingClientRect().width || 1; }
+$("usageexport").addEventListener("click", async () => {
+  const d = await (await fetch("/moe/usage/ranking")).json();
+  const blob = new Blob([d.order_file + "\n"], {type: "text/plain"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "expert-order.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
 });
 $("usagelperlayer").checked = localStorage.getItem("agrimlxo.usagelperlayer") !== "0";
 $("usagelperlayer").addEventListener("change", e => {
