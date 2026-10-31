@@ -329,19 +329,32 @@ def test_solve_tiers_respects_mem_target():
     all_8bit = sum(_bytes_at(i["dims_out"], i["dims_in"], 8) for i in infos) * E
     target = int(all_8bit * 0.5)  # half the 8-bit size: bands MUST appear
 
-    spec = solve_tiers(infos, target)
+    for frac in (0.5, 0.35):
+        spec = solve_tiers(infos, int(all_8bit * frac))
 
-    total = sum(
-        _bytes_at(i["dims_out"], i["dims_in"], g["bits"]) * len(g["experts"])
-        for i in infos for g in spec[i["layer"]]
-    )
-    assert total <= target, "solver exceeded the mem target"
-    # hot-first: rank 0 gets the highest tier, cold tail the lowest
-    assert spec[0][0]["bits"] == 8 and spec[0][0]["experts"][0] == 0
-    assert spec[0][-1]["bits"] == min(2, 8)
-    # contiguous rank bands covering every expert
-    for bands in spec.values():
-        ids = [e for g in bands for e in g["experts"]]
-        assert ids == sorted(ids) and len(ids) == E
-        bits_seq = [g["bits"] for g in bands]
-        assert bits_seq == sorted(bits_seq, reverse=True)
+        total = sum(
+            _bytes_at(i["dims_out"], i["dims_in"], g["bits"]) * len(g["experts"])
+            for i in infos for g in spec[i["layer"]]
+        )
+        assert total <= all_8bit * frac, "solver exceeded the mem target"
+        # la scala non ha MAI buchi interni (il greedy puro dava 8/2 saltando
+        # 6 e 4): i tier visti devono essere un suffisso di [8, 6, 4, 2].
+        # Con budget comodo (0.5) la scala deve essere completa.
+        bits_seen = {g["bits"] for g in spec[0]}
+        ladder = [8, 6, 4, 2]
+        suffix = [t for t in ladder if t in bits_seen]
+        assert sorted(bits_seen, reverse=True) == suffix, (
+            f"interior gap in the tier ladder: {sorted(bits_seen, reverse=True)}"
+        )
+        if frac == 0.5:
+            assert bits_seen == {8, 6, 4, 2}, f"missing tiers: {bits_seen}"
+        # hot-first: rank 0 gets the highest SEEN tier, cold tail the lowest
+        assert spec[0][0]["bits"] == max(bits_seen)
+        assert spec[0][0]["experts"][0] == 0
+        assert spec[0][-1]["bits"] == min(2, 8) == min(bits_seen)
+        # contiguous rank bands covering every expert
+        for bands in spec.values():
+            ids = [e for g in bands for e in g["experts"]]
+            assert ids == sorted(ids) and len(ids) == E
+            bits_seq = [g["bits"] for g in bands]
+            assert bits_seq == sorted(bits_seq, reverse=True)

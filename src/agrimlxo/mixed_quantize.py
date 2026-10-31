@@ -525,10 +525,13 @@ def solve_tiers(
     tiers: List[int] = (8, 6, 4, 2),
     group_size: int = 64,
 ) -> Dict[int, List[dict]]:
-    """Assign 8/6/4/2-bit tiers per rank position (hot first) so the total
-    routed-expert memory fits `target_bytes`. Greedy: hottest ranks get the
-    highest tier that fits the running budget, CAPPED at each layer's source
-    bits (a 6-bit source never yields 8-bit experts).
+    """Assign the bit tiers per rank position (hot first) so the total
+    routed-expert memory fits `target_bytes`, WITH the full ladder present:
+    every intermediate tier gets at least one rank band, then the bands
+    extend hot-first while the budget allows. (A pure per-rank greedy skips
+    rungs when the budget runs out mid-step — e.g. 8/2 or 8/6/2 — losing the
+    graduated decay between hot and cold experts.) Tiers are CAPPED at each
+    layer's source bits (a 6-bit source never yields 8-bit experts).
 
     layer_infos: [{layer, E, dims_out, dims_in, src_bits} per MoE layer].
     Returns {layer: [groups-spec]} (contiguous rank bands per layer).
@@ -551,28 +554,45 @@ def solve_tiers(
     remaining = target_bytes - base
 
     max_E = max(i["E"] for i in layer_infos)
-    # tier per (layer, rank): greedy hot-first con cap sui bit sorgente
+    # costo di UN rank intero (tutti i layer) per ogni tier intermedio
+    rank_cost = {}
+    for tier in tiers[:-1]:
+        rank_cost[tier] = sum(
+            bytes_at(i, capped(i, tier)) - bytes_at(i, min_tier)
+            for i in layer_infos
+            if capped(i, tier) > min_tier
+        )
+
+    # tier per (layer, rank): bande sequenziali hot-first con riserva scala
     tier_grid = {i["layer"]: [min_tier] * i["E"] for i in layer_infos}
-    for rank in range(max_E):
-        layers_with_rank = [i for i in layer_infos if rank < i["E"]]
-        # costa meno che non upgradare: valuta i tier dal piu' alto
-        for tier in tiers[:-1]:
-            cost = sum(
-                bytes_at(i, capped(i, tier)) - bytes_at(i, min_tier)
-                for i in layers_with_rank
-                if capped(i, tier) > min_tier
-            )
-            if cost <= remaining:
-                for i in layers_with_rank:
-                    t = capped(i, tier)
-                    if t > tier_grid[i["layer"]][rank]:
-                        remaining -= (
-                            bytes_at(i, t) - bytes_at(i, tier_grid[i["layer"]][rank])
-                        )
-                        tier_grid[i["layer"]][rank] = t
-                break
-        else:
-            break  # nessun tier accessibile: anche i rank seguenti no
+    pending = list(tiers[1:-1])  # tier intermedi da garantire (es. 6 e 4)
+    band_tiers: List[int] = []
+    for tier in tiers[:-1]:
+        if rank_cost[tier] <= 0:
+            if tier in pending:
+                pending.remove(tier)
+            continue  # tier cap-pato al minimo su tutti i layer: banda vuota
+        # riserva un rank per ciascun tier intermedio non ancora piazzato
+        reserve = sum(rank_cost[t] for t in pending if t != tier)
+        n = int(max(0, remaining - reserve) // rank_cost[tier])
+        # lascia posto ai tier intermedi rimasti + almeno un rank al minimo
+        n = min(n, max(0, max_E - len(band_tiers) - len(pending) - 1))
+        if n == 0:
+            if tier in pending:
+                pending.remove(tier)  # il gradino non entra: si rinuncia
+            continue
+        band_tiers.extend([tier] * n)
+        remaining -= n * rank_cost[tier]
+        if tier in pending:
+            pending.remove(tier)
+        if len(band_tiers) >= max_E:
+            break
+    for r, tier in enumerate(band_tiers):
+        for i in layer_infos:
+            if r < i["E"]:
+                t = capped(i, tier)
+                if t > tier_grid[i["layer"]][r]:
+                    tier_grid[i["layer"]][r] = t
 
     out: Dict[int, List[dict]] = {}
     for i in layer_infos:

@@ -461,12 +461,10 @@ def cmd_serve(args, argv: List[str]):
                 layers_spec="0--1", quant_cache=quant_cache,
                 progress=vlog,
             )
-            used = sorted(
-                {g["bits"] for groups in spec.values() for g in groups},
-                reverse=True,
-            )
-            _log(f"mixed-from-usage: tier {'/'.join(map(str, used))}"
-                 f" su {len(spec)} layer, target {args.mem_target}")
+            first = next(iter(spec.values()))
+            detail = "/".join(f"{g['bits']}b×{len(g['experts'])}" for g in first)
+            _log(f"mixed-from-usage: bande {detail} esperti/layer"
+                 f" (su {len(spec)} layer), target {args.mem_target}")
         else:
             spec = apply_usage_mix_in_memory(
                 loaded, orders, top_m=args.top_m,
