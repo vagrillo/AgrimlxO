@@ -461,8 +461,12 @@ def cmd_serve(args, argv: List[str]):
                 layers_spec="0--1", quant_cache=quant_cache,
                 progress=vlog,
             )
-            _log(f"mixed-from-usage: 4 tier (8/6/4/2) su {len(spec)} layer,"
-                 f" target {args.mem_target}")
+            used = sorted(
+                {g["bits"] for groups in spec.values() for g in groups},
+                reverse=True,
+            )
+            _log(f"mixed-from-usage: tier {'/'.join(map(str, used))}"
+                 f" su {len(spec)} layer, target {args.mem_target}")
         else:
             spec = apply_usage_mix_in_memory(
                 loaded, orders, top_m=args.top_m,
@@ -492,7 +496,7 @@ def cmd_serve(args, argv: List[str]):
         )
         t_warm = time.perf_counter()
         w = engine.warmup(progress=vlog)
-        warmup_s = time.perf_counter() - t_w
+        warmup_s = time.perf_counter() - t_warm
         mem = w.get("memory") or {}
         _log(
             "speed: warmup decode — greedy {g} tok/s | sampled {s} tok/s"

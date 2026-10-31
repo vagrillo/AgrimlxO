@@ -623,11 +623,12 @@ def apply_usage_mix_4tier(
 
     model_bytes_total = _model_bytes(model)
     routed_current = sum(
-        int(sum(getattr(g, f"{p}_weight").nbytes
-                + getattr(g, f"{p}_scales").nbytes
-                + (getattr(g, f"{p}_biases").nbytes
-                   if getattr(g, f"{p}_biases") is not None else 0)
-                for p in _PROJECTIONS))
+        int(sum(
+            getattr(g, f"{p}_weight").nbytes
+            + getattr(g, f"{p}_scales").nbytes
+            + (getattr(g, f"{p}_biases").nbytes
+               if getattr(g, f"{p}_biases") is not None else 0)
+            for g in mlp.switch_mlp.groups for p in _PROJECTIONS))
         if hasattr(mlp.switch_mlp, "groups") else
         sum(int(getattr(getattr(mlp.switch_mlp, p), "weight").nbytes)
             + int(getattr(getattr(mlp.switch_mlp, p), "scales").nbytes
