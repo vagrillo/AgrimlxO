@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """AgrimlxO command-line entry points: serve / download / list."""
 
+import atexit
 import os
 import sys
 from pathlib import Path
