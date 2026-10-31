@@ -441,7 +441,7 @@ def apply_usage_mix_in_memory(
                     # gsize): chiave = fingerprint degli id della fascia
                     _ids_src = "-".join(map(str, sorted(ids)))
                     _gkey_hash = hashlib.sha1(_ids_src.encode()).hexdigest()[:16]
-                    gkey = f"{layer}_{bits}_{gsize}_{_gkey_hash}"
+                    gkey = f"{layer}_{name}_{bits}_{gsize}_{_gkey_hash}"
                     tensors = quant_cache.get_group(gkey)
                 if tensors is None:
                     wq, scales, *biases = mx.quantize(
