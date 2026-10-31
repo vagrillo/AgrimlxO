@@ -16,6 +16,17 @@ from .args import (
 )
 from .moe_expansion import default_profile_for
 
+
+def _parse_budget(spec: str) -> int:
+    spec = spec.strip().upper()
+    mult = 1
+    for suffix, m in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if spec.endswith(suffix):
+            mult = m
+            spec = spec[: -len(suffix)]
+            break
+    return int(float(spec) * mult)
+
 _BANNER = r"""
     _                    _      _  __  __  _   _ ___
    / \   __ _  ___ _ __ | |    / \|  \/  |/ / | |_ _|
@@ -379,15 +390,6 @@ def cmd_serve(args, argv: List[str]):
     if getattr(args, "kache", False):
         from .kache import Kache
 
-        def _parse_budget(spec: str) -> int:
-            spec = spec.strip().upper()
-            mult = 1
-            for suffix, m in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
-                if spec.endswith(suffix):
-                    mult = m
-                    spec = spec[: -len(suffix)]
-                    break
-            return int(float(spec) * mult)
 
         engine.kache = Kache(args.kache_dir, _parse_budget(args.kache_budget))
         engine.kache_restore = getattr(args, "kache_restore", False)
