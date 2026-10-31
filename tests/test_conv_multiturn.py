@@ -66,13 +66,15 @@ def test_multimodal_turn_skips_snapshot_but_reuses_text_prefix(tmp_path):
     m1 = [{"role": "user", "content": "descrivi"}]
     p1 = render(m1) if False else None
     # prompt con un'immagine
+    # il processor espande il pad al numero di token mergiati (4 per 1x4x4)
+    tpl_text = "<|vision_start|>" + "<|image_pad|>" * 4 + "<|vision_end|>descrivi"
     p1 = tok.apply_chat_template(
-        [{"role": "user", "content": f"<|vision_start|><|image_pad|><|vision_end|>descrivi"}],
+        [{"role": "user", "content": tpl_text}],
         add_generation_prompt=True, enable_thinking=True)
     if not isinstance(p1, list): p1 = tok.encode(p1)
     p1 = [t if t != 248056 else IMG for t in p1]  # pad id del toy
     nogen = tok.apply_chat_template(
-        [{"role": "user", "content": f"<|vision_start|><|image_pad|><|vision_end|>descrivi"}],
+        [{"role": "user", "content": tpl_text}],
         add_generation_prompt=False, enable_thinking=True)
     if not isinstance(nogen, list): nogen = tok.encode(nogen)
     nogen = [t if t != 248056 else IMG for t in nogen]
