@@ -362,6 +362,8 @@ def cmd_serve(args, argv: List[str]):
         sys.stderr.flush()
         last_line["n"] = len(line)
 
+    model_label = str(args.model or "model")
+
     engine = Engine(
         loaded,
         tokenizer,
@@ -372,9 +374,6 @@ def cmd_serve(args, argv: List[str]):
         usage_dir="./expertusage",
         model_name=model_label,
     )
-    import atexit
-
-    model_label = str(args.model or "model")
     engine.progress_cb = progress_cb
     if getattr(args, "kache", False):
         from .kache import Kache
