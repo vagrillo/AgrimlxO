@@ -395,10 +395,15 @@ def apply_usage_mix_in_memory(
         hi_ids = order[: min(top_m, E)]
         lo_ids = [e for e in range(E) if e not in set(hi_ids)]
 
+        # clamp sui bit della sorgente: un checkpoint 6-bit non genera 8-bit
+        _, src_bits = _expert_bytes(mlp, layer, prefix, quant)
+        hi_b = min(hi_bits, src_bits)
+        lo_b = min(lo_bits, src_bits)
+
         groups_spec = [
-            {"bits": hi_bits, "group_size": hi_group_size,
+            {"bits": hi_b, "group_size": hi_group_size,
              "experts": [int(e) for e in hi_ids]},
-            {"bits": lo_bits, "group_size": lo_group_size},
+            {"bits": lo_b, "group_size": lo_group_size},
         ]
         mixed_sm = MixedSwitchGLU(
             hidden or mlp.gate.in_features, moe_hidden or hidden, E, groups_spec
@@ -406,7 +411,7 @@ def apply_usage_mix_in_memory(
 
         for gi, ids in ((0, hi_ids), (1, lo_ids)):
             gsize = hi_group_size if gi == 0 else lo_group_size
-            bits = hi_bits if gi == 0 else lo_bits
+            bits = hi_b if gi == 0 else lo_b
             idx = mx.array(ids)
             for name in _PROJECTIONS:
                 proj = getattr(sm, name)
@@ -498,55 +503,75 @@ def solve_tiers(
 ) -> Dict[int, List[dict]]:
     """Assign 8/6/4/2-bit tiers per rank position (hot first) so the total
     routed-expert memory fits `target_bytes`. Greedy: hottest ranks get the
-    highest tier that still fits the running budget.
+    highest tier that fits the running budget, CAPPED at each layer's source
+    bits (a 6-bit source never yields 8-bit experts).
 
     layer_infos: [{layer, E, dims_out, dims_in, src_bits} per MoE layer].
-    Returns {layer: [groups-spec]}.
+    Returns {layer: [groups-spec]} (contiguous rank bands per layer).
     """
-    # base: tutto a 2 bit (il minimo)
-    base = sum(_bytes_at(i["dims_out"], i["dims_in"], tiers[-1], group_size)
-               * i["E"] for i in layer_infos)
+    tiers = sorted(tiers, reverse=True)
+    min_tier = tiers[-1]
+
+    def capped(layer_info: dict, tier: int) -> int:
+        return min(tier, layer_info["src_bits"])
+
+    def bytes_at(li: dict, bits: int) -> int:
+        return _bytes_at(li["dims_out"], li["dims_in"], bits, group_size)
+
+    base = sum(bytes_at(i, min_tier) * i["E"] for i in layer_infos)
     if base > target_bytes:
         raise ValueError(
-            f"mem target too low: all experts at {tiers[-1]} bit already take"
+            f"mem target too low: all experts at {min_tier} bit already take"
             f" {base / 1e9:.1f} GB > {target_bytes / 1e9:.1f} GB"
         )
     remaining = target_bytes - base
-    tier_of_rank = [tiers[-1]] * max(i["E"] for i in layer_infos)
-    # upgrade hot-first: per rank, prova i tier dal più alto
+
     max_E = max(i["E"] for i in layer_infos)
-    n_layers = len(layer_infos)
+    # tier per (layer, rank): greedy hot-first con cap sui bit sorgente
+    tier_grid = {i["layer"]: [min_tier] * i["E"] for i in layer_infos}
     for rank in range(max_E):
+        layers_with_rank = [i for i in layer_infos if rank < i["E"]]
+        # costa meno che non upgradare: valuta i tier dal piu' alto
         for tier in tiers[:-1]:
             cost = sum(
-                _bytes_at(i["dims_out"], i["dims_in"], tier, group_size)
-                - _bytes_at(i["dims_out"], i["dims_in"], tiers[-1], group_size)
-                for i in layer_infos if rank < i["E"]
+                bytes_at(i, capped(i, tier)) - bytes_at(i, min_tier)
+                for i in layers_with_rank
+                if capped(i, tier) > min_tier
             )
             if cost <= remaining:
-                tier_of_rank[rank] = tier
-                remaining -= cost
+                for i in layers_with_rank:
+                    t = capped(i, tier)
+                    if t > tier_grid[i["layer"]][rank]:
+                        remaining -= (
+                            bytes_at(i, t) - bytes_at(i, tier_grid[i["layer"]][rank])
+                        )
+                        tier_grid[i["layer"]][rank] = t
                 break
         else:
-            continue
-    # groups per layer: contigui per rank -> 4 gruppi
+            break  # nessun tier accessibile: anche i rank seguenti no
+
     out: Dict[int, List[dict]] = {}
     for i in layer_infos:
-        E = i["E"]
+        L_id, E = i["layer"], i["E"]
+        grid = tier_grid[L_id]
         spec = []
         assigned = set()
-        for tier in tiers:
-            ids = [e for e in range(E)
-                   if e not in assigned and tier_of_rank[e] == tier]
-            if not ids:
-                continue
+        # bande contigue di rank con lo stesso tier
+        rank = 0
+        while rank < E:
+            tier = grid[rank]
+            band = []
+            while rank < E and grid[rank] == tier:
+                band.append(rank)
+                rank += 1
+            ids = sorted(band)
             assigned.update(ids)
             spec.append({"bits": tier, "group_size": group_size, "experts": ids})
         if assigned != set(range(E)):
             missing = [e for e in range(E) if e not in assigned]
-            spec.append({"bits": tiers[-1], "group_size": group_size,
+            spec.append({"bits": min_tier, "group_size": group_size,
                          "experts": missing})
-        out[i["layer"]] = spec
+        out[L_id] = spec
     return out
 
 
