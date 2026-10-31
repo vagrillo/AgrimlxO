@@ -295,6 +295,7 @@ textarea { resize: vertical; min-height: 64px; }
       brightness = usage share; the hottest LEDs saturate to white. Only the
       native top-K experts count (expansion ranks excluded).</div>
     <canvas id="usagecanvas" width="640" height="520" style="width:100%;background:#000;border-radius:8px;border:1px solid var(--border)"></canvas>
+    <div class="switch"><span>Normalize per layer</span><input type="checkbox" id="usagelperlayer" checked></div>
     <div class="setting"><div class="row"><span>Contrast (gamma)</span><span class="val" id="usagegamma-v"></span></div>
       <input type="range" id="usagegamma" min="0.2" max="10" step="0.1"></div>
     <div class="moeinfo" id="usageinfo">…</div>
@@ -1044,13 +1045,21 @@ function drawHeatmap(u){
   const cw = cv.width / L, ch = cv.height / E;
   const rBase = Math.max(1.2, Math.min(cw, ch) * 0.28);
   let max = 0;
-  for (let l = 0; l < L; l++) for (let e = 0; e < E; e++) max = Math.max(max, u.counts[l][e]);
-  if (max === 0) max = 1;
+  const layerMax = new Array(L).fill(0);
   for (let l = 0; l < L; l++) {
+    for (let e = 0; e < E; e++) {
+      max = Math.max(max, u.counts[l][e]);
+      layerMax[l] = Math.max(layerMax[l], u.counts[l][e]);
+    }
+  }
+  if (max === 0) max = 1;
+  const perLayer = $("usagelperlayer").checked;
+  for (let l = 0; l < L; l++) {
+    const denom = perLayer ? Math.max(1, layerMax[l]) : max;
     for (let e = 0; e < E; e++) {
       const c = u.counts[l][e];
       if (!c) continue;
-      const t = Math.pow(c / max, usageGamma);   // contrasto regolabile
+      const t = Math.pow(c / denom, usageGamma);   // contrasto regolabile
       const r = rBase * (1 + 0.6 * t);           // diametro cresce con l'uso
       // LED ramp: nero -> rosso -> saturo -> bianco al massimo
       const rr = Math.min(255, Math.round(80 + 175 * t * 1.6));
@@ -1078,6 +1087,11 @@ $("usagegamma").addEventListener("input", e => {
   usageGamma = parseFloat(e.target.value);
   $("usagegamma-v").textContent = usageGamma;
   localStorage.setItem("agrimlxo.usagegamma", usageGamma);
+  loadUsage();
+});
+$("usagelperlayer").checked = localStorage.getItem("agrimlxo.usagelperlayer") !== "0";
+$("usagelperlayer").addEventListener("change", e => {
+  localStorage.setItem("agrimlxo.usagelperlayer", e.target.checked ? "1" : "0");
   loadUsage();
 });
 $("usagereset").addEventListener("click", async () => {
