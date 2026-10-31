@@ -646,6 +646,23 @@ def create_app(state: ServerState) -> FastAPI:
         return {"ok": True, "active": rt.active, "reduce_active": rt.reduce_active,
                 "n": rt.n, "banner": lines}
 
+    # ---- expert usage heatmap ----
+
+    @app.get("/moe/usage")
+    def moe_usage(scope: str = "all", _: None = Depends(auth)):
+        u = state.engine.usage
+        if u is None:
+            raise HTTPException(404, "usage collector unavailable")
+        return u.snapshot(session=(scope == "session"))
+
+    @app.post("/moe/usage/reset")
+    def moe_usage_reset(_: None = Depends(auth)):
+        u = state.engine.usage
+        if u is None:
+            raise HTTPException(404, "usage collector unavailable")
+        u.reset_session()
+        return {"ok": True}
+
     # ---- chat completions ----
 
     @app.post("/v1/chat/completions")

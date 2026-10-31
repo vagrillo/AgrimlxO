@@ -30,7 +30,11 @@ import logging
 import mlx.core as mx
 
 from .. import kernels, speed
-from ..moe_expansion import expansion_post_pass, reduce_post_pass
+from ..moe_expansion import (
+    expansion_post_pass,
+    observe_usage,
+    reduce_post_pass,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,7 @@ def routed_forward(
         if norm_topk_prob:
             scores = scores / scores.sum(axis=-1, keepdims=True)
         cnt = None
+        observe_usage(layer_idx, inds, k)
     else:
         # ---- expansion / reduce path: rank-ordered selection ----
         if use_expansion:
@@ -93,6 +98,7 @@ def routed_forward(
                 w, runtime.reduce.factor, renormalize=norm_topk_prob
             )
         inds, scores = order, w
+        observe_usage(layer_idx, inds, n if use_expansion else top_k)
 
     if runtime is not None and cnt is not None:
         runtime.record(layer_idx, cnt, inds)

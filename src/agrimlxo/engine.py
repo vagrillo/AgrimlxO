@@ -23,7 +23,7 @@ from typing import Iterator, List, Optional, Tuple
 import mlx.core as mx
 
 from .models.cache import ArraysCache, QuantizedKVCache
-from .moe_expansion import MoERuntime
+from .moe_expansion import ExpertUsage, MoERuntime
 from .sampler import make_sampler, make_logits_processors
 from .tokenizer import Tokenizer
 
@@ -218,6 +218,15 @@ class Engine:
         # forward con gli state ripristinati) e richiede --kache-restore
         self.kache = None
         self.kache_restore = False
+        # uso degli esperti (heatmap webui): accumulo globale single-model
+        text_args = getattr(loaded.model, "text_args", None)
+        self.usage = ExpertUsage(
+            getattr(text_args, "num_hidden_layers", 0) or 1,
+            getattr(text_args, "num_experts", 0) or 1,
+        )
+        from .moe_expansion import set_usage_sink
+
+        set_usage_sink(self.usage)
 
     # -- generation ----------------------------------------------------------
 
@@ -370,6 +379,8 @@ class Engine:
                 if self.runtime is not None:
                     self.runtime.note_tokens(len(chunk))
                     self._moe_observability(pos0, total)
+                if self.usage is not None:
+                    self.usage.drain()
                 if cs + self.prefill_step_size < len(segment):
                     mx.eval(out)
             # sync the last chunk NOW so prefill_ms includes the GPU work
@@ -475,6 +486,8 @@ class Engine:
                     )
                 slot.tokens.append(tok)
                 exp_last = exp_mean = None
+                if self.usage is not None:
+                    self.usage.drain()
                 if self.runtime is not None:
                     self.runtime.note_tokens(1)
                     self._moe_observability(pos0, total)

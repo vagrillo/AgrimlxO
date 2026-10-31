@@ -204,6 +204,7 @@ textarea { resize: vertical; min-height: 64px; }
   <div class="spacer"></div>
   <button class="icon" id="themeswitch" title="tema">◐</button>
   <button class="icon" id="moebtn" title="MoE expansion runtime" style="font-weight:700">MOE</button>
+  <button class="icon" id="usagebtn" title="expert usage heatmap" style="font-weight:700">USAGE</button>
   <button class="icon" id="setbtn" title="settings">⚙</button>
 </header>
 
@@ -254,6 +255,21 @@ textarea { resize: vertical; min-height: 64px; }
     <div class="setting"><div class="row"><span>0 = random</span></div>
       <input type="number" id="seed" min="0" step="1" placeholder="0 = random"></div>
     <div class="moeinfo" id="moedefault">…</div>
+  </aside>
+
+  <aside id="usagepanel" class="hidden">
+    <h3>Expert usage heatmap</h3>
+    <div class="switch">
+      <span class="uscope" data-s="all" style="cursor:pointer;font-weight:700;color:var(--accent2)">All-time</span>
+      <span style="color:var(--text2)">/</span>
+      <span class="uscope" data-s="session" style="cursor:pointer;color:var(--text2)">Session (trip)</span>
+    </div>
+    <div class="moeinfo">Rows: experts (0..255) · Columns: layers (0..39) ·
+      brightness = usage share; the hottest LEDs saturate to white. Only the
+      native top-K experts count (expansion ranks excluded).</div>
+    <canvas id="usagecanvas" width="640" height="520" style="width:100%;background:#000;border-radius:8px;border:1px solid var(--border)"></canvas>
+    <div class="moeinfo" id="usageinfo">…</div>
+    <button class="panel-btn ghost" id="usagereset" style="display:none">Reset session counter (trip reset)</button>
   </aside>
 
   <aside id="moepanel" class="hidden">
@@ -933,6 +949,71 @@ $("pdfdpi-v").textContent = $("pdfdpi").value;
 // restore the most recent chat, if any
 if (chats.length) resumeChat(chats[0].id);
 else renderHistory();
+// ---------- expert usage heatmap ----------
+let usageScope = "all", usageTimer = null;
+$("usagebtn").addEventListener("click", () => {
+  const p = $("usagepanel");
+  p.classList.toggle("hidden");
+  $("usagebtn").classList.toggle("active");
+  if (p.classList.contains("hidden")) { clearInterval(usageTimer); usageTimer = null; }
+  else { loadUsage(); usageTimer = setInterval(loadUsage, 2000); }
+});
+document.querySelectorAll(".uscope").forEach(el => el.addEventListener("click", () => {
+  usageScope = el.dataset.s;
+  document.querySelectorAll(".uscope").forEach(e => {
+    e.style.fontWeight = e.dataset.s === usageScope ? "700" : "400";
+    e.style.color = e.dataset.s === usageScope ? "var(--accent2)" : "var(--text2)";
+  });
+  loadUsage();
+}));
+async function loadUsage(){
+  try {
+    const u = await (await fetch(`/moe/usage?scope=${usageScope}`)).json();
+    drawHeatmap(u);
+    $("usagereset").style.display = usageScope === "session" ? "" : "none";
+    $("usageinfo").innerHTML = `tokens observed: <b>${u.tokens}</b>` +
+      (usageScope === "session" ? " (session — trip counter)" : " (all-time)");
+  } catch(e) {}
+}
+function drawHeatmap(u){
+  const cv = $("usagecanvas"), ctx = cv.getContext("2d");
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
+  const L = u.layers, E = u.experts;
+  const cw = cv.width / L, ch = cv.height / E;
+  const r = Math.max(1.2, Math.min(cw, ch) * 0.28);
+  let max = 0;
+  for (let l = 0; l < L; l++) for (let e = 0; e < E; e++) max = Math.max(max, u.counts[l][e]);
+  if (max === 0) max = 1;
+  for (let l = 0; l < L; l++) {
+    for (let e = 0; e < E; e++) {
+      const c = u.counts[l][e];
+      if (!c) continue;
+      const t = Math.pow(c / max, 0.6);           // percettivo
+      // LED ramp: nero -> rosso -> saturo -> bianco al massimo
+      const rr = Math.min(255, Math.round(80 + 175 * t * 1.6));
+      const gg = Math.round(t > 0.75 ? 255 * (t - 0.75) / 0.25 * 0.85 : 0);
+      const bb = Math.round(t > 0.9 ? 255 * (t - 0.9) / 0.1 : 0);
+      ctx.fillStyle = `rgb(${rr},${gg},${bb})`;
+      ctx.shadowColor = `rgb(${rr},0,0)`;
+      ctx.shadowBlur = t > 0.5 ? 6 * t : 0;
+      ctx.beginPath();
+      ctx.arc(l * cw + cw / 2, e * ch + ch / 2, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  }
+  // etichette layer ogni 5
+  ctx.fillStyle = "rgba(160,160,160,.9)"; ctx.font = "10px monospace";
+  for (let l = 0; l < L; l += 5) ctx.fillText(l, l * cw + 2, cv.height - 2);
+  ctx.save(); ctx.translate(8, 14); ctx.fillText("e0", 0, 0); ctx.restore();
+  ctx.fillStyle = "rgba(160,160,160,.9)";
+  ctx.fillText("e" + (E - 1), 4, cv.height - 14);
+}
+$("usagereset").addEventListener("click", async () => {
+  await fetch("/moe/usage/reset", {method: "POST"});
+  loadUsage();
+});
+
 // ---------- MOE runtime panel ----------
 $("moebtn").addEventListener("click", async () => {
   $("moepanel").classList.toggle("hidden");

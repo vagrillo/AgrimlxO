@@ -43,6 +43,72 @@ from typing import Dict, List, Optional, Tuple
 import mlx.core as mx
 import numpy as np
 
+# sink globale dell'uso degli esperti (server single-model): osservato da
+# routed_forward a ogni chiamata MoE, svuotato dal motore dopo i sync
+USAGE_SINK: Optional["ExpertUsage"] = None
+
+
+def set_usage_sink(sink: Optional["ExpertUsage"]) -> None:
+    global USAGE_SINK
+    USAGE_SINK = sink
+
+
+def observe_usage(layer_idx: int, ids: mx.array, k_native: int):
+    """Append (lazy, no eval) the native top-K expert ids of one MoE call to
+    the sink; the engine drains it after its sync points."""
+    if USAGE_SINK is None:
+        return
+    USAGE_SINK.observe_lazy(layer_idx, ids, k_native)
+
+
+class ExpertUsage:
+    """Accumulator of native top-K expert usage per layer.
+
+    counts_all: since server start; counts_session: resettable (chat session).
+    Only the first k_native rank-ordered ids count, even when the expansion
+    raises the routed budget above the native top-K.
+    """
+
+    def __init__(self, n_layer: int, n_expert: int):
+        self.n_layer = n_layer
+        self.n_expert = n_expert
+        self.counts_all = np.zeros((n_layer, n_expert), dtype=np.int64)
+        self.counts_session = np.zeros((n_layer, n_expert), dtype=np.int64)
+        self.tokens_all = 0
+        self.tokens_session = 0
+        self._lazy: deque = deque()
+
+    def observe_lazy(self, layer_idx: int, ids: mx.array, k_native: int):
+        self._lazy.append((layer_idx, ids, min(k_native, ids.shape[-1])))
+
+    def drain(self):
+        """Convert pending lazy ids to counts (call after sync points on the
+        engine thread: the ids are materialized by the forward)."""
+        while self._lazy:
+            layer_idx, ids, k = self._lazy[0]
+            try:
+                vals = np.asarray(ids[..., :k], dtype=np.int64).reshape(-1)
+            except Exception:
+                break  # non materialized yet
+            self._lazy.popleft()
+            np.add.at(self.counts_all[layer_idx], vals, 1)
+            np.add.at(self.counts_session[layer_idx], vals, 1)
+            self.tokens_all += 1
+            self.tokens_session += 1
+
+    def reset_session(self):
+        self.counts_session[:] = 0
+        self.tokens_session = 0
+
+    def snapshot(self, session: bool = False) -> Dict:
+        counts = self.counts_session if session else self.counts_all
+        return {
+            "layers": self.n_layer,
+            "experts": self.n_expert,
+            "tokens": self.tokens_session if session else self.tokens_all,
+            "counts": counts.tolist(),
+        }
+
 # Minimum kept-weight sum guard used by the llama.cpp implementation (2^-14).
 _RENORM_MIN = 6.103515625e-5
 
