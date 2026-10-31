@@ -197,6 +197,21 @@ def _add_serve_args(p: argparse.ArgumentParser):
                    help="resolution used to render PDF pages as images (default: 100);"
                         " the webui settings can override it per browser")
 
+    # ---- kache (persistent conversation KV snapshots) ----
+    p.add_argument("--kache", dest="kache", action="store_true", default=False,
+                   help="persist conversation KV snapshots in --kache-dir so a"
+                        " continuing conversation skips the prefill even after a"
+                        " server restart")
+    p.add_argument("--kache-dir", dest="kache_dir", default="./kache",
+                   help="directory of the persisted snapshots (default: ./kache)")
+    p.add_argument("--kache-budget", dest="kache_budget", default="8GB",
+                   help="max size of the kache directory, evicting the least"
+                        " recently used conversations (default: 8GB; e.g. 4GB, 512MB)")
+    p.add_argument("--kache-restore", dest="kache_restore", action="store_true", default=False,
+                   help="EXPERIMENTAL: restore conversation snapshots from the kache"
+                        " directory into new slots (a native crash was observed in"
+                        " some setups; keep off unless verified)")
+
     # ---- tools ----
     p.add_argument("--tools", dest="tools", action="store_true", default=False,
                    help="enable the local tool loop: the model can call the python"

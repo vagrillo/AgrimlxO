@@ -22,9 +22,24 @@ from typing import Iterator, List, Optional, Tuple
 
 import mlx.core as mx
 
+from .models.cache import ArraysCache, QuantizedKVCache
 from .moe_expansion import MoERuntime
 from .sampler import make_sampler, make_logits_processors
 from .tokenizer import Tokenizer
+
+
+def _copy_state(state):
+    """Deep copy of a cache state: mx arrays are copied (the decode scatters
+    in-place into the cache buffers and would corrupt a shared snapshot);
+    lists/tuples recurse; scalars pass through."""
+    import mlx.core as _mx
+
+    if isinstance(state, _mx.array):
+        return _mx.array(state)
+    if isinstance(state, (list, tuple)):
+        copied = [_copy_state(x) for x in state]
+        return type(state)(copied) if isinstance(state, tuple) else copied
+    return state
 
 
 class ContextOverflowError(ValueError):
@@ -192,23 +207,36 @@ class Engine:
         self._lock = Lock()
         # optional live progress: cb(dict) called on the engine thread
         self.progress_cb = None
+        # conversation snapshots: conv_key -> {tokens, states, uses}; states
+        # hold the per-layer cache arrays AT THE PREFILL BOUNDARY (before the
+        # generation suffix), where the rendered tokens are stable across turns
+        self.snapshots = {}
+        self.max_snapshots = 4
+        self.min_snapshot_tokens = 32
+        # persistenza opzionale su disco (./kache): scritta dopo la cattura;
+        # il restore da disco è sperimentale (segfault nativo osservato nel
+        # forward con gli state ripristinati) e richiede --kache-restore
+        self.kache = None
+        self.kache_restore = False
 
     # -- generation ----------------------------------------------------------
 
     def generate(
         self, prompt: List[int], params: GenParams, slot_id: int = 0,
-        images: Optional[dict] = None,
+        images: Optional[dict] = None, conv_key: Optional[str] = None,
+        snapshot_at: Optional[int] = None,
     ) -> Iterator[Step]:
         """Serialize generations on the engine lock (MLX decode runs on a
         single GPU stream), then yield one Step per generated token. The
         final Step carries the finish_reason and no text. ``images`` carries
         prebuilt ``pixel_values``/``image_grid_thw`` for multimodal prefill."""
         with self._lock:
-            yield from self._generate_locked(prompt, params, slot_id, images)
+            yield from self._generate_locked(prompt, params, slot_id, images, conv_key, snapshot_at)
 
     def _generate_locked(
         self, prompt: List[int], params: GenParams, slot_id: int,
-        images: Optional[dict] = None,
+        images: Optional[dict] = None, conv_key: Optional[str] = None,
+        snapshot_at: Optional[int] = None,
     ) -> Iterator[Step]:
         """Yield one Step per generated token (blocking; run in a worker
         thread)."""
@@ -228,10 +256,43 @@ class Engine:
 
         slot = self.slots[slot_id % len(self.slots)]
         reuse = self._reuse_len(slot, prompt)
-        if reuse > 0:
+        snap_restored = False
+        if reuse == 0 and conv_key and conv_key not in self.snapshots \
+                and self.kache is not None and images is None \
+                and self.kache_restore:
+            loaded = self.kache.load(conv_key)
+            if loaded is not None:
+                tokens_disk, states_disk = loaded
+                self.snapshots[conv_key] = {
+                    "tokens": tokens_disk, "states": states_disk,
+                    "uses": 1, "last_used": time.time(),
+                }
+        if reuse == 0 and conv_key and conv_key in self.snapshots:
+            snap = self.snapshots[conv_key]
+            snap_toks = snap["tokens"]
+            if (
+                len(snap_toks) >= self.min_snapshot_tokens
+                and len(snap_toks) < len(prompt)
+                and prompt[: len(snap_toks)] == snap_toks
+            ):
+                # continua dallo snapshot della conversazione: i layer
+                # ricorrenti (GDN) hanno lo stato esatto al confine del
+                # prefill, dove i token renderizzati sono stabili
+                try:
+                    caches = self.loaded.make_cache(self.cache_type)
+                    for c, (cls_name, st) in zip(caches, snap["states"]):
+                        c.state = _copy_state(st)
+                    reuse = len(snap_toks)
+                    snap_restored = True
+                    snap["uses"] += 1
+                    slot.caches = caches
+                    slot.tokens = prompt[:reuse]
+                except Exception:
+                    reuse = 0
+        if reuse > 0 and not snap_restored:
             caches = slot.caches
             prompt_left = prompt[reuse:]
-        else:
+        elif not snap_restored:
             caches = self.loaded.make_cache(self.cache_type)
             slot.caches = caches
             slot.tokens = []
@@ -328,7 +389,34 @@ class Engine:
                 self._moe_observability(pos0, total)
             return out
 
-        logits = forward_chunked(prompt_left) if prompt_left else None
+        do_snapshot = (
+            conv_key is not None and snapshot_at is not None
+            and self.min_snapshot_tokens <= snapshot_at < len(prompt)
+            and images is None
+        )
+        if do_snapshot:
+            # prefill in due fasi: lo snapshot cade al confine stabile (la
+            # coda di generazione non fa parte del prefisso del turno dopo)
+            logits = forward_chunked(prompt[:snapshot_at])
+            snap_states = [
+                (type(c).__name__, _copy_state(c.state)) for c in caches
+            ]
+            self.snapshots[conv_key] = {
+                "tokens": list(prompt[:snapshot_at]),
+                "states": snap_states,
+                "uses": self.snapshots.get(conv_key, {}).get("uses", 0) + 1,
+                "last_used": time.time(),
+            }
+            if self.kache is not None:
+                self.kache.save(conv_key, prompt[:snapshot_at], snap_states)
+            while len(self.snapshots) > self.max_snapshots:
+                oldest = min(self.snapshots, key=lambda k: self.snapshots[k]["uses"])
+                if oldest == conv_key or len(self.snapshots) == 1:
+                    break
+                del self.snapshots[oldest]
+            logits = forward_chunked(prompt[snapshot_at:])
+        else:
+            logits = forward_chunked(prompt_left) if prompt_left else None
         if logits is None:
             # prompt exactly equals the cached prefix: nothing to continue
             # from — re-prefill from scratch to get valid logits
@@ -336,6 +424,7 @@ class Engine:
             slot.caches = caches
             slot.tokens = []
             logits = forward_chunked(prompt)
+
         t_prefill_done = time.perf_counter()
         prefill_ms = (t_prefill_done - t_start) * 1000.0
 

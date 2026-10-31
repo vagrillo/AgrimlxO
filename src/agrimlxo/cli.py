@@ -371,6 +371,25 @@ def cmd_serve(args, argv: List[str]):
         cache_type=args.cache_type_k,
     )
     engine.progress_cb = progress_cb
+    if getattr(args, "kache", False):
+        from .kache import Kache
+
+        def _parse_budget(spec: str) -> int:
+            spec = spec.strip().upper()
+            mult = 1
+            for suffix, m in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+                if spec.endswith(suffix):
+                    mult = m
+                    spec = spec[: -len(suffix)]
+                    break
+            return int(float(spec) * mult)
+
+        engine.kache = Kache(args.kache_dir, _parse_budget(args.kache_budget))
+        engine.kache_restore = getattr(args, "kache_restore", False)
+        _log(
+            f"kache: persisted snapshots in {args.kache_dir}"
+            f" (budget {args.kache_budget})"
+        )
     if args.cache_type_k != args.cache_type_v:
         _log(
             "note: --cache-type-k and --cache-type-v differ; using the K type for"

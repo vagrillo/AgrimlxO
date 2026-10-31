@@ -238,6 +238,34 @@ class ServerState:
             kwargs["tools"] = tools_schema
         return self.tokenizer.apply_chat_template(flat, **kwargs)
 
+    def conv_key_and_stable_len(self, messages: List[dict], prepared) -> tuple:
+        """Conversation fingerprint (all messages but the last user turn) and
+        the stable-boundary length: the token count of the render WITHOUT the
+        generation suffix — the prefix the next turn reproduces exactly."""
+        import hashlib
+
+        key_src = json.dumps(
+            [{k: v for k, v in m.items() if k in ("role", "content")}
+             for m in messages[:-1]],
+            ensure_ascii=False, sort_keys=True, default=str,
+        )
+        conv_key = hashlib.sha1(key_src.encode()).hexdigest()[:24]
+        snapshot_at = None
+        if self.engine.loaded.model.vision_tower is None or not isinstance(
+            prepared, dict
+        ):
+            try:
+                nogen_text = self.tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=False
+                )
+                if isinstance(nogen_text, list):
+                    snapshot_at = len(nogen_text)
+                else:
+                    snapshot_at = len(self.tokenizer.encode(nogen_text))
+            except Exception:
+                snapshot_at = None
+        return conv_key, snapshot_at
+
     def slot_acquire(self) -> "SlotHandle":
         for i, s in enumerate(self.active_slots):
             if s is None:
@@ -268,7 +296,8 @@ def _sse(data: str) -> str:
 
 async def _run_generation(
     state: ServerState, tokens: List[int], params: GenParams, slot_id: int,
-    images: Optional[dict] = None,
+    images: Optional[dict] = None, conv_key: Optional[str] = None,
+    snapshot_at: Optional[int] = None,
 ):
     """Async generator of Steps; the blocking engine runs in a worker thread
     and forwards steps through a queue. The final Step carries finish_reason.
@@ -664,7 +693,7 @@ def create_app(state: ServerState) -> FastAPI:
             slot.release()
             raise
 
-    async def _chat_once(state, req, tokens, params, slot, split_enabled, images=None, messages=None, template_kwargs=None):
+    async def _chat_once(state, req, tokens, params, slot, split_enabled, images=None, messages=None, template_kwargs=None, conv_key=None, snapshot_at=None):
         rid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         content = ""
         reasoning = ""

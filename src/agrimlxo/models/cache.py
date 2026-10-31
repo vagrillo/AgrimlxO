@@ -250,11 +250,11 @@ class ArraysCache(_BaseCache):
 
     @property
     def state(self):
-        return self.cache, self.left_padding, self.lengths
+        return self.cache, self.left_padding, self.lengths, self.offset
 
     @state.setter
     def state(self, v):
-        self.cache, self.left_padding, self.lengths = v
+        self.cache, self.left_padding, self.lengths, self.offset = v
 
     def prepare(self, lengths=None, **kwargs):
         self.lengths = mx.array(lengths)
