@@ -488,7 +488,7 @@ def create_app(state: ServerState) -> FastAPI:
             "reasoning_format": a.reasoning_format,
             "moe_expansion": moe,
             "tools": state.tools.names() if state.tools else [],
-            "pdf_dpi": getattr(args, "pdf_dpi", 100),
+            "pdf_dpi": getattr(state.args, "pdf_dpi", 100),
             "agrimlxo_version": __version__,
             "server": "AgrimlxO",
         }
