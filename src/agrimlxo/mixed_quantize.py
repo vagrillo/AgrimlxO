@@ -604,11 +604,25 @@ def apply_usage_mix_4tier(
         mlp = loaded.layers[layer].mlp
         sm = mlp.switch_mlp
         _, src_bits = _expert_bytes(mlp, layer, prefix, loaded.config.get("quantization"))
-        dims_in = sm.gate_proj.weight.shape[2]
-        dims_out = sm.gate_proj.weight.shape[1]
+        # dims VERI: il weight di uno switch_mlp quantizzato e' packed
+        # (uint32) — il dims logico viene dalle scales
+        proj = sm.gate_proj
+        sc = getattr(proj, "scales", None)
+        if sc is not None:
+            gs = getattr(proj, "group_size", 64)
+            dims_in = int(sc.shape[2] * gs)
+            src_bits_l = int(round(
+                proj.weight.nbytes * 8
+                / (proj.weight.shape[0] * proj.weight.shape[1] * dims_in)
+            ))
+        else:
+            dims_in = int(proj.weight.shape[2])
+            src_bits_l = 16
+        dims_out = int(proj.weight.shape[1])
         layer_infos.append({
             "layer": layer, "E": mlp.num_experts,
-            "dims_out": dims_out, "dims_in": dims_in, "src_bits": src_bits,
+            "dims_out": dims_out, "dims_in": dims_in,
+            "src_bits": max(2, min(16, src_bits_l)),
         })
 
     spec = solve_tiers(layer_infos, target_bytes, tiers, group_size)
