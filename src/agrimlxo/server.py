@@ -571,12 +571,15 @@ def create_app(state: ServerState) -> FastAPI:
         c = rt.config
         enabled = body.get("enabled")
         max_experts = int(body.get("max_experts", c.max_experts) or 0)
-        if enabled is False:
+        threshold = float(body.get("threshold", c.threshold) or 0.0)
+        if enabled is False or max_experts == 0:
+            # disattivata o stock: nessun parametro espansione residuo
             max_experts = 0
+            threshold = 0.0
         cfg = MoEExpansionConfig(
             max_experts=max_experts,
             add_experts=0,
-            threshold=float(body.get("threshold", c.threshold) or 0.0),
+            threshold=threshold,
             decay_end=float(body.get("decay_end", c.decay_end) or 0.5),
             no_decay=bool(body.get("no_decay", c.no_decay)),
             renorm=body.get("renorm", c.renorm),
