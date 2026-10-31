@@ -130,3 +130,39 @@ README and `docs/moe-expansion.md`.
 * Multi-node pipeline/distributed sharding (single Mac target).
 * Continuous batching across requests (single-stream decode; slots queue).
 * GUI beyond the embedded chat page (per instructions: server-only).
+
+## Known limitation: multi-turn KV prefix reuse (and the plan)
+
+The slot KV cache reuses an exact token continuation (slot.tokens a strict
+prefix of the new prompt). Multi-turn chat breaks this: the Qwen3.5 chat
+template re-renders past assistant turns differently from what the model
+emitted at generation time — with thinking off it inserts an empty
+`<think>
+
+</think>` block into past assistant turns; with thinking on it auto-opens
+`<think>
+` — so the new prompt stops being an exact token continuation at the
+assistant-turn boundary and the engine re-prefills the conversation.
+
+Verified with the real tokenizer: the textual common prefix between the
+stored stream and the next-turn render always ends at that boundary, for
+both reasoning forms (content tags and reasoning_content).
+
+### Plan (next session): rendered-state conversation cache
+
+1. Server-side `conv_state`: fingerprint (sha1 of the message list prefix)
+   -> {rendered_text, tokens} captured AFTER each request, where
+   `rendered_text` is built as `render(M_prev)` + the assistant turn in the
+   template's own re-render convention (obtainable exactly by rendering
+   `M_prev + [assistant(answer)]` — the same way the next turn renders the
+   past).
+2. On a new request whose message list extends a stored prefix by one user
+   turn: stitch = common text prefix + tokenize(suffix) with a k-step
+   roundtrip check against the stored tokens (k = 1..64). The stitched
+   token stream feeds the existing slot prefix-reuse (no engine change).
+3. Fall back to a full prefill whenever the roundtrip check fails — the
+   reuse is strictly best-effort and never affects correctness.
+4. `./kache` persistence (separate feature, same infrastructure):
+   fingerprint -> {tokens, cache arrays} saved as safetensors with an LRU
+   index and a byte budget (--kache-budget), evicted by (reuse count, age);
+   restored into a fresh slot on a fingerprint hit after a restart.
