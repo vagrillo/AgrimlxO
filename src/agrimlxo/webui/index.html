@@ -512,7 +512,7 @@ function askPdfMode(file){
     const bg = document.createElement("div"); bg.className = "modal-bg";
     bg.innerHTML = `<div class="modal"><h4>${esc(file.name)}</h4>` +
       `<p>How should this PDF be processed? Page images use the model's` +
-      ` vision (100 dpi, max 6 pages); text goes into the context as text.</p>` +
+      ` vision (all pages); text goes into the context as text.</p>` +
       `<div class="btns"><button class="secondary" data-v="text">Text</button>` +
       `<button class="primary" data-v="images">Page images</button></div></div>`;
     bg.querySelectorAll("button").forEach(b => b.onclick = () => { bg.remove(); resolve(b.dataset.v); });
@@ -661,9 +661,7 @@ function buildMessages(){
   if (sys) msgs.push({role: "system", content: sys});
   for (const m of history) {
     if (m.role === "assistant" && m.reasoning)
-      msgs.push({role: "assistant",
-                 content: "<think>" + m.reasoning + "</think>\n\n" + m.content,
-                 reasoning_content: m.reasoning});
+      msgs.push({role: "assistant", content: m.content, reasoning_content: m.reasoning});
     else if (m.role === "user" && m.attachments && m.attachments.some(a => a.kind === "image")) {
       // i modelli sono stateless: le immagini vanno reinviate a ogni turno
       const parts = [];
