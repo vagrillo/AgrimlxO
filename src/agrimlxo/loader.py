@@ -33,6 +33,7 @@ def resolve_model_path(model_id: str) -> Path:
                 model_id,
                 allow_patterns=[
                     "*.json",
+                    "*.jinja",  # chat template standalone (recent checkpoints)
                     "*.safetensors",
                     "tokenizer*",
                     "*.py",  # rare remote code; sanitized away otherwise
