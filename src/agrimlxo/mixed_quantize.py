@@ -526,12 +526,15 @@ def solve_tiers(
     group_size: int = 64,
 ) -> Dict[int, List[dict]]:
     """Assign the bit tiers per rank position (hot first) so the total
-    routed-expert memory fits `target_bytes`, WITH the full ladder present:
-    every intermediate tier gets at least one rank band, then the bands
-    extend hot-first while the budget allows. (A pure per-rank greedy skips
-    rungs when the budget runs out mid-step — e.g. 8/2 or 8/6/2 — losing the
-    graduated decay between hot and cold experts.) Tiers are CAPPED at each
-    layer's source bits (a 6-bit source never yields 8-bit experts).
+    routed-expert memory fits `target_bytes`, with a PYRAMID distribution:
+    ranks are spread over the ladder with weights 1:2:...:L (lowest tier
+    heaviest — e.g. 10/20/30/40% on 8/6/4/2), budget surplus buys MORE
+    experts at the HIGHER bits (top-first), compression shrinks the bands
+    proportionally never below one rank per rung, and a budget that can't
+    afford even that truncates the ladder from the top. (A pure per-rank
+    greedy skipped rungs instead — 8/2 or 8/6/2 depending on where the
+    budget ran out.) Tiers are CAPPED at each layer's source bits (a 6-bit
+    source never yields 8-bit experts).
 
     layer_infos: [{layer, E, dims_out, dims_in, src_bits} per MoE layer].
     Returns {layer: [groups-spec]} (contiguous rank bands per layer).
@@ -563,30 +566,51 @@ def solve_tiers(
             if capped(i, tier) > min_tier
         )
 
-    # tier per (layer, rank): bande sequenziali hot-first con riserva scala
+    # tier per (layer, rank): piramide pesata + surplus/compressione
     tier_grid = {i["layer"]: [min_tier] * i["E"] for i in layer_infos}
-    pending = list(tiers[1:-1])  # tier intermedi da garantire (es. 6 e 4)
-    band_tiers: List[int] = []
-    for tier in tiers[:-1]:
-        if rank_cost[tier] <= 0:
-            if tier in pending:
-                pending.remove(tier)
-            continue  # tier cap-pato al minimo su tutti i layer: banda vuota
-        # riserva un rank per ciascun tier intermedio non ancora piazzato
-        reserve = sum(rank_cost[t] for t in pending if t != tier)
-        n = int(max(0, remaining - reserve) // rank_cost[tier])
-        # lascia posto ai tier intermedi rimasti + almeno un rank al minimo
-        n = min(n, max(0, max_E - len(band_tiers) - len(pending) - 1))
-        if n == 0:
-            if tier in pending:
-                pending.remove(tier)  # il gradino non entra: si rinuncia
-            continue
-        band_tiers.extend([tier] * n)
-        remaining -= n * rank_cost[tier]
-        if tier in pending:
-            pending.remove(tier)
-        if len(band_tiers) >= max_E:
+    ladder = [t for t in tiers if t == min_tier or rank_cost.get(t, 0) > 0]
+    up: List[int] = []       # tier con banda (escluso il minimo)
+    up_cnt: List[int] = []   # rank per tier
+    while len(ladder) > 1 and len(ladder) <= max_E:
+        up = ladder[:-1]
+        L = len(ladder)
+
+        def _cost(cnt: List[int]) -> int:
+            return sum(c * rank_cost[t] for c, t in zip(cnt, up))
+
+        # piramide: pesi 1..L (cima=1, minimo=L) -> es. 10/20/30/40%
+        w = list(range(1, L + 1))
+        tot = sum(w)
+        up_cnt = [max_E * wi // tot for wi in w[:-1]]
+        cost_up = _cost(up_cnt)
+        if cost_up <= remaining:
+            # surplus -> piu' esperti ai bit alti (top-first), tenendo >=5%
+            # dei rank al gradino minimo
+            room = max_E - max(1, max_E // 20) - sum(up_cnt)
+            left = remaining - cost_up
+            for i, t in enumerate(up):
+                take = min(room, int(left // rank_cost[t]))
+                up_cnt[i] += take
+                room -= take
+                left -= take * rank_cost[t]
             break
+        # non entra: comprimi proporzionalmente, mai sotto 1 rank a gradino
+        if sum(rank_cost[t] for t in up) <= remaining:
+            f = remaining / cost_up
+            up_cnt = [max(1, int(c * f)) for c in up_cnt]
+            # i floor con minimo 1 possono sforare: taglia dal gradino basso
+            i = len(up) - 1
+            while _cost(up_cnt) > remaining and i >= 0:
+                while up_cnt[i] > 1 and _cost(up_cnt) > remaining:
+                    up_cnt[i] -= 1
+                i -= 1
+            break
+        # nemmeno un rank per gradino: tronca la scala dalla cima
+        ladder = ladder[1:]
+        up, up_cnt = [], []
+    band_tiers: List[int] = []
+    for t, c in zip(up, up_cnt):
+        band_tiers.extend([t] * c)
     for r, tier in enumerate(band_tiers):
         for i in layer_infos:
             if r < i["E"]:

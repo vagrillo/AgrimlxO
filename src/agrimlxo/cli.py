@@ -410,6 +410,9 @@ def cmd_serve(args, argv: List[str]):
         model_name=model_label,
     )
     engine.progress_cb = progress_cb
+    if engine.usage is not None:
+        _log(f"usage: {engine.usage.tokens_all} tokens all-time"
+             f" ({engine.usage.persist_path})")
     if getattr(args, "kache", False):
         from .kache import Kache
 
@@ -435,6 +438,15 @@ def cmd_serve(args, argv: List[str]):
         from .mixed_quantize import ExpertQuantCache, apply_usage_mix_in_memory
 
         t_mixed = time.perf_counter()
+        if engine.usage is not None and engine.usage.tokens_all < 1000:
+            _log(
+                "warning: mixed-from-usage su un ranking quasi vuoto"
+                f" ({engine.usage.tokens_all} tokens): l'ordine caldo/freddo"
+                " segue quasi gli ID, non l'uso reale. Chatta col modello per"
+                " accumulare usage, o riusa il file di una variante"
+                " equivalente (cp expertusage/<variante>.json"
+                f" {engine.usage.persist_path}) e riavvia."
+            )
 
         quant_cache = ExpertQuantCache(
             "./expertcache",

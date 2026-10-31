@@ -348,6 +348,11 @@ def test_solve_tiers_respects_mem_target():
         )
         if frac == 0.5:
             assert bits_seen == {8, 6, 4, 2}, f"missing tiers: {bits_seen}"
+            # piramide: la banda del tier piu' alto non puo' dominare
+            # (surplus sì, ma il gradino minimo resta >= ~5% dei rank)
+            size_by_bits = {g["bits"]: len(g["experts"]) for g in spec[0]}
+            assert size_by_bits[2] >= E // 20, size_by_bits
+            assert size_by_bits[8] < size_by_bits[2], size_by_bits
         # hot-first: rank 0 gets the highest SEEN tier, cold tail the lowest
         assert spec[0][0]["bits"] == max(bits_seen)
         assert spec[0][0]["experts"][0] == 0
