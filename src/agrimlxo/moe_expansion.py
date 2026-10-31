@@ -161,6 +161,9 @@ class ExpertUsage:
                 self._persist()
 
     def reset_session(self):
+        # svuota anche la coda lazy: gli osservati in volo (schedulati con
+        # async_eval prima del reset) non devono riaccendersi dopo
+        self._lazy.clear()
         self.counts_session[:] = 0
         self.tokens_session = 0
 

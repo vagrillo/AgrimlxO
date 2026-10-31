@@ -41,6 +41,21 @@ def test_native_top_k_only_and_scopes():
         set_usage_sink(None)
 
 
+def test_reset_clears_pending_lazy():
+    u = ExpertUsage(n_layer=2, n_expert=4)
+    set_usage_sink(u)
+    try:
+        lazy = mx.argmax(mx.zeros((1, 1, 4)), axis=-1)[..., None]
+        observe_usage(0, lazy, k_native=1)
+        observe_usage(0, lazy, k_native=1)
+        u.reset_session()          # reset con entry ancora in coda
+        u.drain()                  # il drain post-reset non deve contare
+        assert u.counts_session[0].sum() == 0
+        assert u.counts_all[0].sum() == 0
+    finally:
+        set_usage_sink(None)
+
+
 def test_lazy_drain_defers_until_materialized():
     u = ExpertUsage(n_layer=2, n_expert=4)
     set_usage_sink(u)
