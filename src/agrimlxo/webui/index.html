@@ -661,7 +661,9 @@ function buildMessages(){
   if (sys) msgs.push({role: "system", content: sys});
   for (const m of history) {
     if (m.role === "assistant" && m.reasoning)
-      msgs.push({role: "assistant", content: m.content, reasoning_content: m.reasoning});
+      msgs.push({role: "assistant",
+                 content: "<think>" + m.reasoning + "</think>\n\n" + m.content,
+                 reasoning_content: m.reasoning});
     else if (m.role === "user" && m.attachments && m.attachments.some(a => a.kind === "image")) {
       // i modelli sono stateless: le immagini vanno reinviate a ogni turno
       const parts = [];

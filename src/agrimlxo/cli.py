@@ -342,6 +342,7 @@ def cmd_serve(args, argv: List[str]):
         parallel=args.parallel,
         cache_type=args.cache_type_k,
     )
+    engine.progress_cb = progress_cb
     if args.cache_type_k != args.cache_type_v:
         _log(
             "note: --cache-type-k and --cache-type-v differ; using the K type for"
@@ -356,6 +357,34 @@ def cmd_serve(args, argv: List[str]):
         n = compile_ffn(engine.loaded.model)
         if n:
             _log(f"speed: mx.compile applied to {n} FFN sub-calls")
+    import threading as _threading
+
+    last_line = {"n": 0}
+
+    def progress_cb(ev):
+        # riga singola aggiornata con \r: fase, barra, %, tok/s, stato
+        import time as _time
+
+        phase = ev["phase"]
+        done, total, elapsed = ev["done"], ev["total"], max(1e-6, ev["elapsed"])
+        tps = done / elapsed
+        if phase == "prefill":
+            pct = min(100.0, done * 100.0 / max(1, total))
+            bar = "#" * int(pct // 5)
+            line = f"\rprefill [{bar:<20}] {pct:5.1f}%  {done}/{total} tok  {tps:.0f} tok/s"
+        else:
+            state = ev.get("state") or ""
+            tag = "🧠 thinking" if state == "thinking" else "✍ answering"
+            if total:
+                pct = min(100.0, done * 100.0 / max(1, total))
+                bar = "#" * int(pct // 5)
+                line = f"\rdecode  [{bar:<20}] {pct:5.1f}%  {done} tok  {tps:.1f} tok/s  {tag}"
+            else:
+                line = f"\rdecode  {done} tok  {tps:.1f} tok/s  {tag}"
+        sys.stderr.write(line)
+        sys.stderr.flush()
+        last_line["n"] = len(line)
+
     if not args.no_warmup:
         w = engine.warmup()
         mem = w.get("memory") or {}

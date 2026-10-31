@@ -372,6 +372,9 @@ def _tools_enabled(state: "ServerState", req) -> bool:
 def _log_request(params: GenParams, final: Step):
     """One console line per completed request: engine timings + sampling
     params, so the server's own stderr tells the whole story."""
+    import sys as _sys
+
+    _sys.stderr.write("\n")  # chiude l'eventuale riga di progresso \r
     if final is None:
         return
     prefill = (

@@ -14,6 +14,7 @@ Single-model, single-stream MLX generation with:
   * MoE expansion observability (stats window driven by processed tokens).
 """
 
+import sys
 import time
 from dataclasses import dataclass, field
 from threading import Lock
@@ -189,6 +190,8 @@ class Engine:
         # MLX decode serializes on the GPU stream: one generation at a time,
         # further requests wait here (arrival order not strictly FIFO).
         self._lock = Lock()
+        # optional live progress: cb(dict) called on the engine thread
+        self.progress_cb = None
 
     # -- generation ----------------------------------------------------------
 
@@ -269,6 +272,22 @@ class Engine:
         think_count = 0
         wrapup_pending = False
 
+        t_start_wall = time.perf_counter()
+
+        def report(phase: str, done: int, total_n: int, state: str = ""):
+            if self.progress_cb is None:
+                return
+            try:
+                self.progress_cb({
+                    "phase": phase,
+                    "done": done,
+                    "total": total_n,
+                    "state": state,
+                    "elapsed": time.perf_counter() - t_start_wall,
+                })
+            except Exception:
+                pass
+
         def forward_chunked(segment: List[int]):
             nonlocal total, caches
             out = None
@@ -347,6 +366,7 @@ class Engine:
             mx.async_eval(tok_arr)
 
             steps_since_clear = 0
+            last_report = time.perf_counter()
             while True:
                 # queue the next model step with the current token as input:
                 # the cache advances by this token (lazily), so slot.tokens
@@ -357,6 +377,13 @@ class Engine:
                 steps_since_clear += 1
 
                 tok = int(tok_arr.item())  # sync CURRENT while GPU runs next
+                now = time.perf_counter()
+                if now - last_report > 0.25:
+                    last_report = now
+                    report(
+                        "decode", len(tokens), max_gen or 0,
+                        "thinking" if in_think else "answering",
+                    )
                 slot.tokens.append(tok)
                 exp_last = exp_mean = None
                 if self.runtime is not None:
