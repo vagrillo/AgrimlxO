@@ -1042,7 +1042,7 @@ function drawHeatmap(u){
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
   const L = u.layers, E = u.experts;
   const cw = cv.width / L, ch = cv.height / E;
-  const r = Math.max(1.2, Math.min(cw, ch) * 0.28);
+  const rBase = Math.max(1.2, Math.min(cw, ch) * 0.28);
   let max = 0;
   for (let l = 0; l < L; l++) for (let e = 0; e < E; e++) max = Math.max(max, u.counts[l][e]);
   if (max === 0) max = 1;
@@ -1051,6 +1051,7 @@ function drawHeatmap(u){
       const c = u.counts[l][e];
       if (!c) continue;
       const t = Math.pow(c / max, usageGamma);   // contrasto regolabile
+      const r = rBase * (1 + 0.6 * t);           // diametro cresce con l'uso
       // LED ramp: nero -> rosso -> saturo -> bianco al massimo
       const rr = Math.min(255, Math.round(80 + 175 * t * 1.6));
       const gg = Math.round(t > 0.75 ? 255 * (t - 0.75) / 0.25 * 0.85 : 0);
