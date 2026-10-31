@@ -182,6 +182,12 @@ class ExpertQuantCache:
             logger.warning("expert cache put %s: %s", k, e)
 
 
+def _model_bytes(model) -> int:
+    from mlx.utils import tree_flatten
+
+    return int(sum(v.nbytes for _, v in tree_flatten(model.parameters())))
+
+
 def _layer_prefix(model) -> str:
     return (
         "language_model.model"
@@ -462,6 +468,9 @@ def apply_usage_mix_in_memory(
         mlp.switch_mlp = mixed_sm
         mixed_spec[layer] = groups_spec
 
+    if hasattr(mx, "clear_cache"):
+        mx.clear_cache()
+
     return mixed_spec
 
 
@@ -599,6 +608,29 @@ def apply_usage_mix_4tier(
     target_layers = set(parse_layers(layers_spec, n_layer))
     moe_layers = sorted(set(_moe_layer_indices(loaded)) & target_layers)
 
+    model_bytes_total = _model_bytes(model)
+    routed_current = sum(
+        int(sum(getattr(g, f"{p}_weight").nbytes
+                + getattr(g, f"{p}_scales").nbytes
+                + (getattr(g, f"{p}_biases").nbytes
+                   if getattr(g, f"{p}_biases") is not None else 0)
+                for p in _PROJECTIONS))
+        if hasattr(mlp.switch_mlp, "groups") else
+        sum(int(getattr(getattr(mlp.switch_mlp, p), "weight").nbytes)
+            + int(getattr(getattr(mlp.switch_mlp, p), "scales").nbytes
+                  if getattr(getattr(mlp.switch_mlp, p), "scales", None) is not None else 0)
+            for p in _PROJECTIONS)
+        for mlp in (l.mlp for l in loaded.layers)
+        if hasattr(mlp, "switch_mlp")
+    )
+    non_routed = model_bytes_total - routed_current
+    effective_target = target_bytes - non_routed
+    if effective_target <= 0:
+        raise ValueError(
+            f"mem target {target_bytes / 1e9:.0f} GB e' sotto la memoria"
+            f" non-esperti del modello ({non_routed / 1e9:.1f} GB)"
+        )
+
     layer_infos = []
     for layer in moe_layers:
         mlp = loaded.layers[layer].mlp
@@ -625,7 +657,7 @@ def apply_usage_mix_4tier(
             "src_bits": max(2, min(16, src_bits_l)),
         })
 
-    spec = solve_tiers(layer_infos, target_bytes, tiers, group_size)
+    spec = solve_tiers(layer_infos, effective_target, tiers, group_size)
 
     quant = loaded.config.get("quantization")
     targs = getattr(model, "text_args", None)
@@ -686,6 +718,18 @@ def apply_usage_mix_4tier(
                     "biases": tensors.get(f"{name}.biases"),
                 })
         mlp.switch_mlp = mixed_sm
+
+    # rilascia la memoria dei vecchi tensori 6-bit sostituiti
+    if hasattr(mx, "clear_cache"):
+        mx.clear_cache()
+    actual = _model_bytes(model)
+    import logging
+
+    logging.getLogger(__name__).info(
+        "mixed 4-tier: memoria modello %d MB (target %d MB, non-esperti"
+        " %d MB)", actual // (1 << 20), target_bytes // (1 << 20),
+        non_routed // (1 << 20),
+    )
 
     return spec
 
