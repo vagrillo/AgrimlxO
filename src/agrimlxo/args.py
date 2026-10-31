@@ -186,6 +186,11 @@ def _add_serve_args(p: argparse.ArgumentParser):
                         " for large prefill batches; reorders the fp accumulation vs the"
                         " stock ops (also AGRIMLXO_FAST_MOE=1; default off)")
 
+    # ---- vision / pdf ----
+    p.add_argument("--pdf-dpi", dest="pdf_dpi", type=int, default=100,
+                   help="resolution used to render PDF pages as images (default: 100);"
+                        " the webui settings can override it per browser")
+
     # ---- tools ----
     p.add_argument("--tools", dest="tools", action="store_true", default=False,
                    help="enable the local tool loop: the model can call the python"

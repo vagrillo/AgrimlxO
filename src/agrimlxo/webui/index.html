@@ -247,6 +247,9 @@ textarea { resize: vertical; min-height: 64px; }
     <div class="moeinfo" id="toolsinfo">…</div>
     <h3>Server</h3>
     <div class="moeinfo" id="moeinfo">…</div>
+    <h3>PDF (page images)</h3>
+    <div class="setting"><div class="row"><span>DPI</span><span class="val" id="pdfdpi-v"></span></div>
+      <input type="number" id="pdfdpi" min="50" max="300" step="10"></div>
     <h3>Seed</h3>
     <div class="setting"><div class="row"><span>0 = random</span></div>
       <input type="number" id="seed" min="0" step="1" placeholder="0 = random"></div>
@@ -516,7 +519,8 @@ function askPdfMode(file){
     document.body.appendChild(bg);
   });
 }
-async function pdfToPageImages(file, maxPages = 6, dpi = 100){
+async function pdfToPageImages(file, maxPages = Infinity, dpi){
+  dpi = dpi || parseInt($("pdfdpi").value) || 100;
   if (!window.pdfjsLib) throw new Error("pdf.js not loaded (CDN connection required)");
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
@@ -899,6 +903,12 @@ $("usetools").checked = localStorage.getItem("agrimlxo.tools") === "1";
 $("usetools").addEventListener("change", e => localStorage.setItem("agrimlxo.tools", e.target.checked ? "1" : "0"));
 $("seed").addEventListener("input", e => localStorage.setItem("agrimlxo.seed", e.target.value));
 $("seed").value = localStorage.getItem("agrimlxo.seed") || "0";
+$("pdfdpi").addEventListener("input", e => {
+  localStorage.setItem("agrimlxo.pdfdpi", e.target.value);
+  $("pdfdpi-v").textContent = e.target.value;
+});
+$("pdfdpi").value = localStorage.getItem("agrimlxo.pdfdpi") || (props && props.pdf_dpi) || 100;
+$("pdfdpi-v").textContent = $("pdfdpi").value;
 // restore the most recent chat, if any
 if (chats.length) resumeChat(chats[0].id);
 else renderHistory();
