@@ -60,8 +60,8 @@ pip install .
 #    bfloat16 needs ~64+ GB of unified memory)
 agrimlxo download mlx-community/Qwen3.6-35B-A3B-8bit
 
-# 3) serve: the AgrillaMoE default expansion profile (experts 12, T=0.75,
-#    layers 25-39) is injected automatically for Qwen3.6-35B-A3B
+# 3) serve (expansion OFF by default; add --moe-expansion to enable the
+#    default profile: experts 12, threshold 0.75, layers 25-39)
 agrimlxo serve -m mlx-community/Qwen3.6-35B-A3B-8bit
 
 #    ...or keep everything stock:

@@ -74,10 +74,10 @@ Invalid parameters (N out of range, non-MoE model, threshold outside
 together) fail fast at model load with a clear message and a non-zero exit
 code.
 
-## Default profiles (AgrillaMoE behavior)
+## Default profiles (opt-in)
 
-The default expansion profile is injected **only if the user passes no
-`--moe-*` / `--q35-*` flag**; `--no-moe-expansion` (or
+The default expansion profile is injected **only when the user explicitly
+passes `--moe-expansion`** (the expansion is OFF by default); `--no-moe-expansion` (or
 `AGRIMLXO_NO_MOE_EXPANSION=1`) disables it entirely. Profiles are
 signature-matched on the model config (layers / experts / top-K), like the
 AgrillaMoE launcher does on GGUF metadata:
