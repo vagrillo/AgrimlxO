@@ -122,8 +122,8 @@ def test_default_profile_injection(tmp_path, capsys, monkeypatch):
             f,
         )
 
-    argv = ["serve", "-m", str(d), "--temp", "0"]
-    args = NS()
+    argv = ["serve", "-m", str(d), "--temp", "0", "--moe-expansion"]
+    args = NS(moe_expansion=True)
     apply_default_profile(args, d, argv)
     assert args.moe_experts == 12
     assert args.moe_expert_threshold == 0.75
@@ -133,9 +133,9 @@ def test_default_profile_injection(tmp_path, capsys, monkeypatch):
 
     # user flags prevent injection
     argv2 = ["serve", "-m", str(d), "--moe-experts", "16"]
-    args2 = NS()
+    args2 = NS(moe_expansion=True)
     apply_default_profile(args2, d, argv2)
-    assert args2.moe_experts == 0
+    assert args2.moe_experts == 0  # user flags win
 
     # explicit disable prevents injection
     argv3 = ["serve", "-m", str(d), "--no-moe-expansion"]

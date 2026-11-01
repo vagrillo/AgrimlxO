@@ -551,8 +551,11 @@ def solve_tiers(
     base = sum(bytes_at(i, min_tier) * i["E"] for i in layer_infos)
     if base > target_bytes:
         raise ValueError(
-            f"mem target too low: all experts at {min_tier} bit already take"
-            f" {base / 1e9:.1f} GB > {target_bytes / 1e9:.1f} GB"
+            f"mem target {target_bytes / 1e9:.1f} GB too low: the routed"
+            f" experts alone need {base / 1e9:.1f} GB at {min_tier} bit"
+            f" (the minimum). Raise --mem-target to at least"
+            f" {(base + 4_000_000_000) / 1e9:.0f} GB"
+            f" (the experts minimum + ~4 GB non-routed)"
         )
     remaining = target_bytes - base
 

@@ -272,8 +272,8 @@ def cmd_mixed_quantize(args):
 
 
 def apply_default_profile(args, model_path: Path, argv: List[str]):
-    """AgrillaMoE behavior: inject the signature-matched default expansion
-    profile only when the user passed no --moe-* flag and didn't disable it."""
+    """Inject the signature-matched expansion profile ONLY when the user
+    explicitly passes --moe-expansion (the expansion is OFF by default)."""
     from .loader import peek_moe_geometry
 
     if getattr(args, "no_moe_expansion", False) or os.environ.get(
@@ -281,8 +281,12 @@ def apply_default_profile(args, model_path: Path, argv: List[str]):
     ) not in ("", "0"):
         _log("moe: expansion disabled (--no-moe-expansion)")
         return
+    if not getattr(args, "moe_expansion", False):
+        return  # OFF by default: serve --moe-expansion per attivarla
+    if not getattr(args, "moe_expansion", False):
+        return  # OFF by default: serve --moe-expansion per attivarla
     if user_requested_moe(argv):
-        return
+        return  # flag espliciti dell'utente hanno la precedenza
     geom = peek_moe_geometry(model_path)
     if geom is None:
         return

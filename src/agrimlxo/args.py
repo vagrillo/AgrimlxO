@@ -174,9 +174,14 @@ def _add_serve_args(p: argparse.ArgumentParser):
                         " (0 = use MOE_EXPERT_STATS_EVERY, default 128; only meaningful with expansion active)")
     p.add_argument("--moe-expert-log", dest="moe_expert_log", default="", metavar="FILE",
                    help="log the kept expert ids per token/layer to FILE (moe_predict.py format)")
+    p.add_argument("--moe-expansion", dest="moe_expansion", action="store_true", default=False,
+                   help="enable the default expansion profile (Qwen3.5/3.6-35B-A3B:"
+                        " experts 12, threshold 0.75, layers 25-39) — OFF by default;"
+                        " use --moe-experts/--moe-expert-threshold for custom settings")
     p.add_argument("--no-moe-expansion", "--agrilla-no-moe-expansion", dest="no_moe_expansion",
                    action="store_true", default=False,
-                   help="disable the MoE expansion entirely (also AGRIMLXO_NO_MOE_EXPANSION=1)")
+                   help="redundant (the expansion is already off by default); kept"
+                        " for backward compatibility")
     # moe-reduce: the inverse of the expansion (dynamic pruning)
     p.add_argument("--moe-reduce", dest="moe_reduce", type=float, default=0.0, metavar="X",
                    help="keep only experts with weight >= X x weight(top-1) (mutually exclusive with --moe-experts)")
