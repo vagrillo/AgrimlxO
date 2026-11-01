@@ -23,7 +23,10 @@ The reference model is **Qwen3.5-35B-A3B (MoE, 256 experts, native top-8)**.
 |---|---|---|
 | **16 GB** | 2–3 bit MLX (search HF: `mlx-community`/`ISTA-DASLab`) | `agrimlxo download <repo-id>` |
 | **32 GB** | 4-bit MLX | `agrimlxo download mlx-community/Qwen3.5-35B-A3B-4bit` |
+|   oppure | 6-bit (vedi §4 lazy) | `agrimlxo download mlx-community/Qwen3.5-35B-A3B-6bit` |
+|   or | 6-bit (see §4 lazy) | `agrimlxo download mlx-community/Qwen3.5-35B-A3B-6bit` |
 | **48 GB** | 6-bit MLX (the reference) | `agrimlxo download mlx-community/Qwen3.5-35B-A3B-6bit` |
+|   or | 8-bit | `agrimlxo download mlx-community/Qwen3.5-35B-A3B-8bit` |
 | **64 GB** | 8-bit MLX | `agrimlxo download mlx-community/Qwen3.5-35B-A3B-8bit` |
 
 If no MLX quant exists on HF yet, generate one from the bf16 source (see §6).
@@ -33,11 +36,14 @@ If no MLX quant exists on HF yet, generate one from the bf16 source (see §6).
 ## 3. First boot
 
 ```bash
-# the default profile (experts 12, threshold 0.75, layers 25–39) is
-# injected automatically for Qwen3.5/3.6-35B-A3B — you'll see it in stderr:
+# the expansion is OFF by default — add --moe-expansion to enable it:
+# stock (top-8 native, no expansion — the default):
 agrimlxo serve -m <modello> --host 0.0.0.0
 
-# expected stderr:
+# with expansion (opt-in via --moe-expansion):
+agrimlxo serve -m <modello> --moe-expansion --host 0.0.0.0
+
+# expected stderr with expansion:
 #   moe: default expansion profile injected (Qwen3.5/3.6-35B-A3B): --moe-experts 12 ...
 #   moe: routed experts per token: 12 (model default 8; ranks 9..12 get linear influence decay 0.99..0.5)
 #   moe: expert threshold: keep experts while p >= 0.75 x p(rank 6) (experts 3..12 per token)
