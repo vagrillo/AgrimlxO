@@ -8,9 +8,10 @@ Passo-passo per ogni taglio di memoria unificata: 16 / 32 / 48 / 64 GB.
 
 ```bash
 git clone https://github.com/vagrillo/AgrimlxO && cd AgrimlxO
-python3 -m venv .venv && source .venv/bin/activate
+(opzionale) python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest tests/ -q        # 92 test — devono essere verdi anche sul Mac
+(opzionale) pytest tests/ -q        # 92 test — devono essere verdi anche sul Mac
+
 ```
 
 ---
