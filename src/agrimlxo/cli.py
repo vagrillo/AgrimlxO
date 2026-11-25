@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""AgrimlxO command-line entry points: serve / download / list."""
+"""AgrimlxO command-line entry points: serve / download / list /
+mixed-quantize, plus the liquid protocol tools (capture / moe-analyze /
+moe-compare)."""
 
 import atexit
 import logging
@@ -13,6 +15,7 @@ from ._version import __version__
 from .args import (
     expansion_configs_from_args,
     fast_moe_prefill_requested,
+    liquid_rules_from_args,
     parse_args,
     user_requested_moe,
 )
@@ -271,6 +274,243 @@ def cmd_mixed_quantize(args):
     _log(f"mixed-quantize: written {summary['out_dir']}")
 
 
+# -- capture / liquid protocol (moe_liquid) ------------------------------------
+
+# Built-in prompt set of the protocol phase 1: diverse domains/styles, run at
+# temperature 0.7 so the router indecision distribution is sampled broadly.
+_CAPTURE_PROMPTS = [
+    "Explain how mixture-of-experts routing works in large language models.",
+    "Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "Summarize the causes and consequences of the 1929 stock market crash.",
+    "Write a Python function that merges two sorted lists without duplicates.",
+    "What are the main differences between nuclear fission and fusion?",
+    "Translate 'the weather is beautiful today' into Italian, French and German.",
+    "Draft a polite email asking a colleague to review a document by Friday.",
+    "Describe step by step how to bake a simple focaccia bread at home.",
+]
+
+
+def _capture_prompt_ids(tokenizer, text: str) -> List[int]:
+    try:
+        ids = tokenizer.apply_chat_template(
+            [{"role": "user", "content": text}]
+        )
+        if ids:
+            return list(ids)
+    except Exception:
+        pass
+    return tokenizer.encode(text)
+
+
+def cmd_capture(args):
+    from .engine import Engine, GenParams
+    from .loader import LoadedModel, build_expansion_runtime
+    from .moe_liquid import RouterCapture, set_capture_sink
+    from .tokenizer import Tokenizer
+
+    print(_BANNER)
+    liquid_requested = (
+        getattr(args, "moe_liquid", False)
+        or getattr(args, "moe_liquid_rules", "")
+        or getattr(args, "moe_liquid_index", "")
+    )
+    _log(
+        "agrimlxo capture: routing "
+        + ("liquid" if liquid_requested else "stock (no expansion)")
+    )
+
+    model_path = resolve_model_arg(args.model, args.models_dir, [])
+    liquid_rules = liquid_rules_from_args(args)
+    expansion = build_expansion_runtime(
+        _load_config_safe(model_path), None, None, liquid_rules
+    )
+
+    _log(f"loading model: {model_path}")
+    loaded = LoadedModel(model_path, expansion=expansion)
+    tokenizer = Tokenizer(model_path, args.chat_template)
+    if expansion is not None and expansion.liquid_active:
+        for line in expansion.banner_lines():
+            _log(line)
+
+    text_args = getattr(loaded.model, "text_args", None)
+    n_layer = getattr(text_args, "num_hidden_layers", 0) or 1
+    n_expert = getattr(text_args, "num_experts", 0) or 1
+    capture = RouterCapture(n_layer, n_expert)
+    set_capture_sink(capture)
+
+    out_dir = Path(args.out).expanduser()
+    # il file usage all-time del motore resta fuori dal server: qui va nella
+    # cartella di output per non inquinare ./expertusage
+    engine = Engine(
+        loaded,
+        tokenizer,
+        ctx_size=args.ctx_size,
+        prefill_step_size=args.batch_size,
+        usage_dir=str(out_dir / "expertusage"),
+        model_name=str(args.model or model_path),
+        capture=capture,
+    )
+    if not args.no_warmup:
+        engine.warmup()
+
+    if args.prompts:
+        lines = Path(args.prompts).read_text(encoding="utf-8").splitlines()
+        prompts = [ln.strip() for ln in lines if ln.strip()]
+    else:
+        prompts = list(_CAPTURE_PROMPTS)
+    if not prompts:
+        raise SystemExit("capture: no prompts (empty --prompts file?)")
+    n_runs = args.runs if args.runs > 0 else len(prompts)
+
+    _log(
+        f"capture: {n_runs} run(s), temp {args.temp:g}, max_tokens"
+        f" {args.max_tokens}, seed base {args.seed} -> {out_dir}"
+    )
+    saved = []
+    try:
+        for i in range(n_runs):
+            prompt_text = prompts[i % len(prompts)]
+            seed = args.seed + i
+            prompt_ids = _capture_prompt_ids(tokenizer, prompt_text)
+            if not prompt_ids:
+                raise SystemExit(f"capture: empty prompt ids for run {i}")
+            capture.start_run({
+                "model": str(args.model or model_path),
+                "prompt": prompt_text,
+                "temp": args.temp,
+                "seed": seed,
+                "mode": "liquid" if liquid_rules is not None else "stock",
+                "index": liquid_rules.index if liquid_rules else "",
+                "n_prompt": len(prompt_ids),
+            })
+            params = GenParams(
+                temp=args.temp, seed=seed, max_tokens=args.max_tokens,
+                repeat_last_n=64,
+            )
+            tokens: List[int] = []
+            parts: List[str] = []
+            for step in engine.generate(prompt_ids, params):
+                if step.token >= 0:
+                    tokens.append(step.token)
+                    parts.append(step.text)
+            if capture.run is not None:
+                capture.run.update({
+                    "tokens": tokens,
+                    "prompt_tokens": prompt_ids,
+                    "text": "".join(parts),
+                })
+            path = out_dir / f"run{i:03d}.npz"
+            meta = capture.save_run(path)
+            saved.append(str(path))
+            _log(
+                f"capture: run {i:03d} -> {path.name}"
+                f" ({meta['n_rows']} positions x {n_layer} layers,"
+                f" {len(tokens)} generated tok)"
+                + (f" [{meta['dropped_rows']} rows dropped]" if meta["dropped_rows"] else "")
+            )
+    finally:
+        capture.abort_run()
+        set_capture_sink(None)
+    _log(f"capture: done ({len(saved)} files in {out_dir})")
+
+
+def cmd_moe_analyze(args):
+    import glob
+
+    import numpy as np
+
+    from .moe_liquid import (
+        INDEX_NAMES,
+        default_rules,
+        index_series_np,
+        layer_stats,
+        load_capture,
+        summarize_runs,
+    )
+
+    files = list(args.files)
+    if args.dir:
+        files += sorted(glob.glob(str(Path(args.dir) / "*.npz")))
+    if not files:
+        raise SystemExit("moe-analyze: no capture files (pass files or --dir)")
+    runs = [load_capture(f) for f in files]
+    total_rows = sum(r.decode_scores().shape[0] if not args.include_prefill
+                     else r.scores.shape[0] for r in runs)
+    _log(f"moe-analyze: {len(runs)} run(s), {total_rows} token rows, top-K"
+         f" {args.top_k}, candidate budgets up to {args.max_experts}")
+
+    indices = [s.strip() for s in args.index.split(",") if s.strip()] or list(INDEX_NAMES)
+    for name in indices:
+        try:
+            stats = summarize_runs(
+                runs, name, args.top_k, args.max_experts,
+                decode_only=not args.include_prefill,
+            )[name]
+        except ValueError as e:
+            raise SystemExit(f"moe-analyze: {e}")
+        print(f"\nindex {name} — first check (budget K={args.top_k}), per layer:")
+        print("  layer   mean     p50     p90")
+        for l in range(stats["mean"].shape[0]):
+            print(
+                f"  {l:5d}  {stats['mean'][l]:7.4f}  {stats['p50'][l]:7.4f}"
+                f"  {stats['p90'][l]:7.4f}"
+            )
+
+    # calibration + rules skeleton (the notes' bands)
+    rules = default_rules()
+    base_index = rules.index
+    chunks = []
+    for r in runs:
+        scores = r.scores if args.include_prefill else r.decode_scores()
+        if scores.shape[0]:
+            chunks.append(index_series_np(base_index, scores, args.top_k, args.max_experts))
+    if chunks and args.calibrate is not None:
+        idx = np.concatenate(chunks, axis=0)
+        first = idx[..., 0]  # [T, L] — the check that starts the ladder
+        print(f"\ncalibration (index {base_index}, p={args.calibrate:g} quantile):")
+        for b in rules.bands:
+            lo, hi = max(0, b.start), min(first.shape[1] - 1, b.end)
+            if lo > hi:
+                continue
+            thr = float(np.quantile(first[:, lo:hi + 1], args.calibrate))
+            b.perp_t = round(thr, 4)
+            b.perp_next = round(thr, 4)
+            print(f"  band {b.start:2d}..{b.end:2d}: PerpT {thr:.4f}")
+    if args.rules_out:
+        rules.save(args.rules_out)
+        _log(f"moe-analyze: rules written to {args.rules_out}")
+
+
+def cmd_moe_compare(args):
+    from .moe_liquid import compare_runs, load_capture
+
+    base = load_capture(args.base)
+    other = load_capture(args.liquid)
+    index = args.index or other.meta.get("index") or base.meta.get("index") or "tail_rel"
+    res = compare_runs(base, other, index, args.top_k, args.max_experts)
+
+    print(f"moe-compare: index {index}")
+    print(f"  base   : {args.base} ({res['tokens_base']} generated tok,"
+          f" mode {base.meta.get('mode', '?')})")
+    print(f"  liquid : {args.liquid} ({res['tokens_other']} generated tok,"
+          f" mode {other.meta.get('mode', '?')})")
+    print("\n  layer |  base mean/p90  |  liq mean/p90   |  d mean")
+    sb, so = res["base"], res["other"]
+    for l in range(sb["mean"].shape[0]):
+        print(
+            f"  {l:5d} |  {sb['mean'][l]:7.4f} / {sb['p90'][l]:6.4f} |"
+            f"  {so['mean'][l]:7.4f} / {so['p90'][l]:6.4f} |"
+            f"  {res['delta_mean'][l]:+7.4f}"
+        )
+    print(
+        f"\noutputs: common prefix {res['common_prefix']} tok,"
+        f" agreement {res['token_agreement'] * 100:.1f}%"
+    )
+    if args.show_text:
+        print(f"\n--- base text ---\n{base.meta.get('text', '')}")
+        print(f"\n--- liquid text ---\n{other.meta.get('text', '')}")
+
+
 def apply_default_profile(args, model_path: Path, argv: List[str]):
     """Inject the signature-matched expansion profile ONLY when the user
     explicitly passes --moe-expansion (the expansion is OFF by default)."""
@@ -353,8 +593,9 @@ def cmd_serve(args, argv: List[str]):
     apply_default_profile(args, model_path, argv)
 
     expansion_cfg, reduce_cfg = expansion_configs_from_args(args)
+    liquid_rules = liquid_rules_from_args(args)
     expansion = build_expansion_runtime(
-        _load_config_safe(model_path), expansion_cfg, reduce_cfg
+        _load_config_safe(model_path), expansion_cfg, reduce_cfg, liquid_rules
     )
 
     _log(f"loading model: {model_path}")
@@ -369,7 +610,9 @@ def cmd_serve(args, argv: List[str]):
     if vlog:
         vlog(f"load: model + tokenizer in {load_s:.1f}s")
 
-    if expansion is not None and (expansion.active or expansion.reduce_active):
+    if expansion is not None and (
+        expansion.active or expansion.reduce_active or expansion.liquid_active
+    ):
         for line in expansion.banner_lines():
             _log(line)
 
@@ -560,6 +803,15 @@ def main(argv: Optional[List[str]] = None):
         return
     if args.command == "mixed-quantize":
         cmd_mixed_quantize(args)
+        return
+    if args.command == "capture":
+        cmd_capture(args)
+        return
+    if args.command == "moe-analyze":
+        cmd_moe_analyze(args)
+        return
+    if args.command == "moe-compare":
+        cmd_moe_compare(args)
         return
     if args.command == "serve":
         if args.suggest_quant:

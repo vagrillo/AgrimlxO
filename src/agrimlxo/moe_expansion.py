@@ -38,13 +38,16 @@ import os
 import sys
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import time
 from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
+
+if TYPE_CHECKING:  # annotations only; avoids the import cycle at runtime
+    from .moe_liquid import LiquidBand, LiquidRules
 
 # sink globale dell'uso degli esperti (server single-model): osservato da
 # routed_forward a ogni chiamata MoE, svuotato dal motore dopo i sync
@@ -449,16 +452,19 @@ class MoERuntime:
         norm_topk_prob: bool,
         config: Optional[MoEExpansionConfig] = None,
         reduce: Optional[MoEReduceConfig] = None,
+        liquid: Optional["LiquidRules"] = None,
     ):
         self.n_layer = n_layer
         self.norm_topk_prob = norm_topk_prob
         self.config = config or MoEExpansionConfig()
         self.reduce = reduce or MoEReduceConfig()
+        self.liquid = liquid  # LiquidRules (moe_liquid) or None
         self.n: int = 0  # resolved expanded budget (0 = inactive everywhere)
         self.k_native: int = 0
         self.n_expert: int = 0
         self.layer_start: int = 0
         self.layer_end: int = -1
+        self._liquid_bands: Dict[int, "LiquidBand"] = {}
         self._stats: Dict[int, _LayerStats] = {}
         self._tokens_since_stats: int = 0
         self._pending_tokens: int = 0
@@ -499,6 +505,25 @@ class MoERuntime:
                 "--moe-reduce and --moe-experts/--moe-expert-threshold are"
                 " mutually exclusive routing modifications"
             )
+        # liquid rules: exclusive with both other routing modifications,
+        # validated against the model geometry, resolved to a per-layer band map
+        self._liquid_bands = {}
+        if self.liquid is not None:
+            if self.n > 0 or self.reduce.factor > 0.0:
+                raise ValueError(
+                    "--moe-liquid and --moe-experts/--moe-expert-threshold/"
+                    "--moe-reduce are mutually exclusive routing modifications"
+                )
+            if not is_moe:
+                raise ValueError(
+                    "liquid expansion requested but the model is not a sparse"
+                    " MoE model (no routed experts in its configuration)"
+                )
+            self.liquid.validate(self.n_layer, k_native, n_expert)
+            for layer_idx in range(self.n_layer):
+                band = self.liquid.band_for(layer_idx)
+                if band is not None and band.top_e > k_native:
+                    self._liquid_bands[layer_idx] = band
         every = self.config.stats_every
         if every == 0:
             every = int(os.environ.get("MOE_EXPERT_STATS_EVERY", "128"))
@@ -512,8 +537,20 @@ class MoERuntime:
         return self.n > 0
 
     @property
+    def liquid_active(self) -> bool:
+        return bool(self._liquid_bands)
+
+    @property
     def reduce_active(self) -> bool:
         return self.reduce.factor > 0.0
+
+    def liquid_band_for(self, layer_idx: int) -> Optional["LiquidBand"]:
+        """The resolved band of this layer, or None (→ stock routing)."""
+        return self._liquid_bands.get(layer_idx)
+
+    def liquid_active_for(self, layer_idx: int) -> bool:
+        """Whether the liquid ladder applies to this layer call."""
+        return layer_idx in self._liquid_bands
 
     def active_for(self, layer_idx: int, k_native: int, n_expert: int) -> bool:
         """Whether the expansion graph applies to this layer call."""
@@ -579,7 +616,7 @@ class MoERuntime:
         safe and cheap; anything still lazy is materialized here (same
         thread that created it — no cross-stream hazard).
         """
-        if not self.active:
+        if not self.active and not self.liquid_active:
             return None, None
         last_sum = 0.0
         last_n = 0
@@ -618,6 +655,11 @@ class MoERuntime:
         the new banner lines. Raises ValueError on invalid input."""
         if self.k_native <= 0:
             raise ValueError("runtime not initialized")
+        if self.liquid is not None:
+            raise ValueError(
+                "the liquid expansion is active; the MOE panel cannot"
+                " reconfigure it (restart with different --moe-liquid* flags)"
+            )
         cfg = config or MoEExpansionConfig()
         red = reduce if reduce is not None else self.reduce
         if red.factor > 0.0 and cfg.requested:
@@ -693,6 +735,25 @@ class MoERuntime:
     def banner_lines(self) -> List[str]:
         """Startup banner lines, in the AgrillaMoE / llama.cpp format."""
         lines: List[str] = []
+        if self.liquid_active:
+            k = self.k_native
+            lines.append(
+                f"moe: liquid expansion: index {self.liquid.index}, native"
+                f" top-{k}, perplexity ladder up to the band budget"
+            )
+            for b in self.liquid.bands:
+                thr = (
+                    f"T {b.perp_t:g}->{b.perp_next:g}"
+                    if b.perp_next != b.perp_t
+                    else f"T {b.perp_t:g}"
+                )
+                lines.append(
+                    f"moe: liquid band {b.start}..{b.end}: {thr}, topE"
+                    f" {b.top_e} ({min(b.top_e, self.n_expert)} slots/token)"
+                )
+            if self.config.renorm != "auto":
+                lines.append(f"moe: kept-weight renormalization: {self.config.renorm}")
+            return lines
         if not self.active:
             if self.reduce_active:
                 layers = self.reduce.layers

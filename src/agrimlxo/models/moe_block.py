@@ -12,6 +12,10 @@ Three code paths:
     the extra ranks, kept-weight renormalization) shapes the final scores.
     Compute scales with N, not with the adaptive kept count, exactly like the
     llama.cpp implementation.
+  * liquid — same fixed-N mask at the band's topE, but the per-token kept
+    count comes from the perplexity ladder (``agrimlxo.moe_liquid``): the
+    router distribution is re-checked after every added expert, per band
+    thresholds, up to the band budget.
   * optional native fast path (--fast-moe-prefill, Metal only): with the
     optional ``agrimlxo-kernels`` extension installed, large prefill batches
     compute the expert outputs on rows sorted by expert id and fold the
@@ -29,12 +33,13 @@ import logging
 
 import mlx.core as mx
 
-from .. import kernels, speed
+from .. import kernels, moe_liquid, speed
 from ..moe_expansion import (
     expansion_post_pass,
     observe_usage,
     reduce_post_pass,
 )
+from ..moe_liquid import liquid_post_pass
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +61,19 @@ def routed_forward(
     gates = gate(x)
     gates = mx.softmax(gates, axis=-1, precise=True)
 
+    # router-distribution capture (liquid protocol phase 1): the FULL
+    # post-softmax distribution, every layer, every processed position
+    _sink = moe_liquid.CAPTURE_SINK
+    if _sink is not None:
+        _sink.observe_lazy(layer_idx, gates)
+
     use_expansion = runtime is not None and runtime.active_for(
         layer_idx, top_k, n_expert
     )
+    use_liquid = runtime is not None and runtime.liquid_active_for(layer_idx)
     use_reduce = runtime is not None and runtime.reduce_active_for(layer_idx)
 
-    if not use_expansion and not use_reduce:
+    if not use_expansion and not use_liquid and not use_reduce:
         # ---- stock path (upstream mlx-lm, untouched) ----
         k = top_k
         inds = mx.argpartition(gates, kth=-k, axis=-1)[..., -k:]
@@ -72,7 +84,7 @@ def routed_forward(
         cnt = None
         observe_usage(layer_idx, inds, k)
     else:
-        # ---- expansion / reduce path: rank-ordered selection ----
+        # ---- expansion / liquid / reduce path: rank-ordered selection ----
         if use_expansion:
             n = runtime.n
             # rank order by descending router probability (argsort, per the
@@ -89,6 +101,24 @@ def routed_forward(
                 runtime.config.no_decay,
                 runtime.renormalize(),
             )
+        elif use_liquid:
+            # liquid expansion: the band's topE slots per token, the kept
+            # count decided per token by the perplexity ladder
+            band = runtime.liquid_band_for(layer_idx)
+            n = min(band.top_e, n_expert)
+            order = mx.argsort(-gates, axis=-1)[..., :n]
+            order = mx.stop_gradient(order)
+            w = mx.take_along_axis(gates, order, axis=-1)  # non-increasing
+            w, cnt = liquid_post_pass(
+                w,
+                gates,
+                band,
+                runtime.liquid.index,
+                top_k,
+                runtime.config.decay_end,
+                runtime.config.no_decay,
+                runtime.renormalize(),
+            )
         else:
             n = top_k
             order = mx.argsort(-gates, axis=-1)[..., :n]
@@ -98,6 +128,8 @@ def routed_forward(
                 w, runtime.reduce.factor, renormalize=norm_topk_prob
             )
         inds, scores = order, w
+        # liquid: the kept set varies per token, so the usage heatmap counts
+        # only the native top-K ranks (the expansion records the full N)
         observe_usage(layer_idx, inds, n if use_expansion else top_k)
 
     if runtime is not None and cnt is not None:

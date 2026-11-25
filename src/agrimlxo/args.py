@@ -28,6 +28,9 @@ _MOE_FLAGS = [
     "--moe-expert-renorm",
     "--moe-expert-layer-start",
     "--moe-expert-layer-end",
+    "--moe-liquid",
+    "--moe-liquid-rules",
+    "--moe-liquid-index",
 ]
 
 
@@ -45,6 +48,30 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- serve (default command) ----
     serve = sub.add_parser("serve", help="run the inference server (default)")
     _add_serve_args(serve)
+
+    # ---- capture (liquid protocol phase 1) ----
+    cap = sub.add_parser(
+        "capture",
+        help="run prompts and capture the full router distributions to .npz"
+             " (liquid protocol phase 1; stock routing unless --moe-liquid)",
+    )
+    _add_capture_args(cap)
+
+    # ---- moe-analyze (liquid protocol phase 2) ----
+    an = sub.add_parser(
+        "moe-analyze",
+        help="per-layer perplexity-index statistics of captured distributions"
+             " (liquid protocol phase 2: pick the index, calibrate thresholds)",
+    )
+    _add_analyze_args(an)
+
+    # ---- moe-compare (liquid protocol phase 3) ----
+    cp = sub.add_parser(
+        "moe-compare",
+        help="compare two captures (stock vs liquid): perplexity per layer"
+             " and generated outputs (liquid protocol phase 3)",
+    )
+    _add_compare_args(cp)
 
     # ---- download ----
     dl = sub.add_parser(
@@ -77,6 +104,78 @@ def _build_parser() -> argparse.ArgumentParser:
     mq.add_argument("--hi-group-size", dest="hi_group_size", type=int, default=64)
     mq.add_argument("--lo-group-size", dest="lo_group_size", type=int, default=64)
     return p
+
+
+def _add_liquid_args(p: argparse.ArgumentParser):
+    """Liquid expansion flags (serve + capture)."""
+    p.add_argument("--moe-liquid", dest="moe_liquid", action="store_true", default=False,
+                   help="enable the liquid expansion: the per-token expert budget"
+                        " grows while the router perplexity ladder says the selection"
+                        " is undecided (default bands: layers 2-13 T 0.80->0.70 topE 10,"
+                        " 14-27 T 0.60 topE 12, 28-39 T 0.50 topE 20;"
+                        " see docs/moe-liquid-expansion.md)")
+    p.add_argument("--moe-liquid-rules", dest="moe_liquid_rules", default="", metavar="FILE",
+                   help="JSON rules file for --moe-liquid (bands + index; implies"
+                        " --moe-liquid)")
+    p.add_argument("--moe-liquid-index", dest="moe_liquid_index", default="", metavar="NAME",
+                   help="perplexity index for --moe-liquid: tail_rel (default), tail,"
+                        " entropy, kept_entropy, eff")
+
+
+def _add_capture_args(p: argparse.ArgumentParser):
+    p.add_argument("-m", "--model", default=None,
+                   help="model: local directory or HF repo id (mlx-community format)")
+    p.add_argument("--models-dir", default=None, help="extra directory to scan for local models")
+    p.add_argument("--prompts", default="", metavar="FILE",
+                   help="file with one prompt per line (default: the built-in prompt set)")
+    p.add_argument("--out", default="./routercapture", metavar="DIR",
+                   help="output directory, one .npz per run (default: ./routercapture)")
+    p.add_argument("--runs", type=int, default=0, metavar="N",
+                   help="number of runs (default: one per prompt)")
+    p.add_argument("--temp", type=float, default=0.7,
+                   help="sampling temperature (default: 0.7, per the protocol)")
+    p.add_argument("--max-tokens", dest="max_tokens", type=int, default=256, metavar="N")
+    p.add_argument("--seed", type=int, default=1234,
+                   help="base seed; run i samples with seed+i (default: 1234)")
+    p.add_argument("-c", "--ctx-size", dest="ctx_size", type=int, default=8192)
+    p.add_argument("-b", "--batch-size", dest="batch_size", type=int, default=2048)
+    p.add_argument("--chat-template", default="", help="jinja chat template override")
+    p.add_argument("--no-warmup", dest="no_warmup", action="store_true", default=False,
+                   help="skip the startup warmup generation")
+    p.add_argument("--verbose", "-v", action="store_true", default=False)
+    _add_liquid_args(p)
+
+
+def _add_analyze_args(p: argparse.ArgumentParser):
+    p.add_argument("files", nargs="*", help="capture .npz files (agrimlxo capture output)")
+    p.add_argument("--dir", default="", metavar="DIR",
+                   help="analyze every .npz in DIR (alternative to the file list)")
+    p.add_argument("--index", default="", metavar="NAMES",
+                   help="comma-separated index names to report (default: all of"
+                        " tail_rel, tail, entropy, kept_entropy, eff)")
+    p.add_argument("--top-k", dest="top_k", type=int, default=8,
+                   help="native top-K of the model (default: 8)")
+    p.add_argument("--max-experts", dest="max_experts", type=int, default=20,
+                   help="largest candidate budget to evaluate (default: 20)")
+    p.add_argument("--include-prefill", dest="include_prefill", action="store_true",
+                   default=False, help="include the prompt rows (default: generated tokens only)")
+    p.add_argument("--calibrate", type=float, default=None, metavar="P",
+                   help="suggest band thresholds as the P-quantile (0..1) of the"
+                        " default index over each band's layers/tokens")
+    p.add_argument("--rules-out", dest="rules_out", default="", metavar="FILE",
+                   help="write the default (or calibrated) rules JSON to FILE")
+
+
+def _add_compare_args(p: argparse.ArgumentParser):
+    p.add_argument("base", help="stock capture .npz (phase-1 run)")
+    p.add_argument("liquid", help="liquid capture .npz (phase-3 run, same prompt/seed)")
+    p.add_argument("--index", default="", metavar="NAME",
+                   help="perplexity index for the per-layer table (default: the"
+                        " liquid run's index, else tail_rel)")
+    p.add_argument("--top-k", dest="top_k", type=int, default=8)
+    p.add_argument("--max-experts", dest="max_experts", type=int, default=20)
+    p.add_argument("--show-text", dest="show_text", action="store_true", default=False,
+                   help="print both generated texts")
 
 
 def _add_serve_args(p: argparse.ArgumentParser):
@@ -187,6 +286,9 @@ def _add_serve_args(p: argparse.ArgumentParser):
                    help="keep only experts with weight >= X x weight(top-1) (mutually exclusive with --moe-experts)")
     p.add_argument("--moe-reduce-layers", dest="moe_reduce_layers", default="0--1", metavar="S-E",
                    help="layer range for --moe-reduce, inclusive 0-based; -1 = last layer (default: all)")
+
+    # ---- liquid MoE expansion (perplexity-driven dynamic budget) ----
+    _add_liquid_args(p)
 
     # ---- model selection helper ----
     p.add_argument("--suggest-quant", action="store_true", default=False,
@@ -323,8 +425,59 @@ def parse_args(argv: Optional[List[str]] = None):
     parser = _build_parser()
     # `agrimlxo ...` (no subcommand) == `agrimlxo serve ...`
     first = argv[0] if argv else None
-    subcommands = ("serve", "download", "list", "mixed-quantize")
+    subcommands = (
+        "serve", "download", "list", "mixed-quantize",
+        "capture", "moe-analyze", "moe-compare",
+    )
     if first is None or first.startswith("-") or first not in subcommands:
         argv = ["serve"] + argv
     args = parser.parse_args(argv)
     return args
+
+
+def liquid_rules_from_args(args):
+    """LiquidRules from the parsed args, or None when the liquid expansion
+    is not requested (--moe-liquid / --moe-liquid-rules / --moe-liquid-index).
+
+    Fail fast (SystemExit) on mutual exclusion with the static expansion /
+    reduce knobs and on invalid rule files.
+    """
+    from .moe_liquid import INDEX_NAMES, LiquidRules, default_rules
+
+    requested = (
+        getattr(args, "moe_liquid", False)
+        or bool(getattr(args, "moe_liquid_rules", ""))
+        or bool(getattr(args, "moe_liquid_index", ""))
+    )
+    if not requested:
+        return None
+    clashes = []
+    if getattr(args, "moe_experts", 0):
+        clashes.append("--moe-experts")
+    if getattr(args, "moe_experts_add", 0):
+        clashes.append("--moe-experts-add")
+    if getattr(args, "moe_expert_threshold", 0.0):
+        clashes.append("--moe-expert-threshold")
+    if getattr(args, "moe_reduce", 0.0):
+        clashes.append("--moe-reduce")
+    if clashes:
+        raise SystemExit(
+            f"--moe-liquid is mutually exclusive with {', '.join(clashes)}"
+        )
+    rules_file = getattr(args, "moe_liquid_rules", "")
+    if rules_file:
+        try:
+            rules = LiquidRules.load(rules_file)
+        except ValueError as e:
+            raise SystemExit(str(e))
+    else:
+        rules = default_rules()
+    idx = getattr(args, "moe_liquid_index", "")
+    if idx:
+        if idx not in INDEX_NAMES:
+            raise SystemExit(
+                f"--moe-liquid-index: unknown index '{idx}'"
+                f" (expected one of {', '.join(INDEX_NAMES)})"
+            )
+        rules.index = idx
+    return rules

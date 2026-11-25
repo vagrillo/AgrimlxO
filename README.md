@@ -124,6 +124,20 @@ matters most in late layers) and `--moe-experts` ds4 aliases
 Full documentation, the algorithm and the benchmark protocol:
 **[docs/moe-expansion.md](docs/moe-expansion.md)**.
 
+### Liquid expansion (experimental)
+
+The dynamic variation of the feature: the per-token expert budget is not a
+fixed N but **grows while a router "perplexity" index says the top-8
+selection is undecided**, re-checking after every added expert, with
+per-band thresholds and budgets (layers 2-13 → topE 10, 14-27 → topE 12,
+28-39 → topE 20; layers 0-1 stay stock). `--moe-liquid` enables the
+default rules; `--moe-liquid-rules rules.json` / `--moe-liquid-index`
+customize them. The experiment protocol — capture the router
+distributions (`agrimlxo capture`), pick the index and calibrate the
+thresholds (`agrimlxo moe-analyze`), run liquid vs stock and compare
+perplexity per layer and outputs (`agrimlxo moe-compare`) — is documented
+in **[docs/moe-liquid-expansion.md](docs/moe-liquid-expansion.md)**.
+
 ## Server options
 
 llama.cpp-server-style surface: `-m/--model`, `--host/--port`, `--api-key`,

@@ -18,6 +18,7 @@ import mlx.nn as nn
 
 from .models import get_model_class, MoEGeometry
 from .moe_expansion import MoERuntime, MoEExpansionConfig, MoEReduceConfig
+from .moe_liquid import LiquidRules
 
 
 def resolve_model_path(model_id: str) -> Path:
@@ -207,6 +208,7 @@ def build_expansion_runtime(
     config: dict,
     expansion_cfg: Optional[MoEExpansionConfig],
     reduce_cfg: Optional[MoEReduceConfig],
+    liquid_rules: Optional[LiquidRules] = None,
 ) -> Optional[MoERuntime]:
     """Create the MoERuntime for a raw config dict (fail-fast validation
     happens in MoERuntime.setup at model load)."""
@@ -215,13 +217,14 @@ def build_expansion_runtime(
         _, geometry = get_model_class(config)
     except ValueError:
         return None
-    if expansion_cfg is None and reduce_cfg is None:
+    if expansion_cfg is None and reduce_cfg is None and liquid_rules is None:
         return None
     return MoERuntime(
         n_layer=geometry.n_layer,
         norm_topk_prob=geometry.norm_topk_prob,
         config=expansion_cfg or MoEExpansionConfig(),
         reduce=reduce_cfg,
+        liquid=liquid_rules,
     )
 
 

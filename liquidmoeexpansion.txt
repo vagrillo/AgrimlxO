@@ -1,0 +1,26 @@
+obiettivo di questa variazione dell'architettura è studiare come poter gestire in maniera efficiente l'espansione dinamica degli esperti utilizzando o la expansion variando il topk o il looping ovvero fare rifare lo stesso layer 
+come determinare cosa delle due operazioni?
+
+fase 1 raccolta dati
+
+  vari run senza nessuna expansion con gli schema di routing degli esperti originali
+   per ogni layer memorizzare la distribuzione in uscita dal router  con l'obiettivo di identificare se gli 8 esperti individuati dal router sono stati individuati con certezza ho c'è una certa indecisione (tipo quando lo score degli esperti dal 9 al 12mo posto hanno uno score non tanto distante dal numero 8) qui dovremmo raccogliere per ogni run i 256 score per ognuno dei 40 layer per ogni token generato e salvarlo .
+
+  analizzando i vari run con vari prompt a temperatura 0.7 possiamo determinare con analisi statistica quale indice utilizzare per definire la "perplexity" degli esperti per ogni layer per ogni token generato 
+
+trovato il metodo di calcolo della perplexity  si definisce un targe per ogni layer ovvero ammettendo che la perplexiry è un indice che va da 0 a 1.0 :  (dove 0 significa che gli 8 esperti individuati sono nettamente i migliori rispetto agli altri 248)
+
+   e poi applicare regole (in questo momento statiche)
+   per il layer da 2 a 13 se la perplexity è inferiore  a 0.8 procedi con i router top 8
+    se è superiore allora aggiungi un esperto (il 9°) e ricalcola la perplexity se  ancora superiore a 0.7 aggiungine un altro, ricalcola e cosi vià .. fino al topE (numero  massimo di esperti definito per questi layer di 10 )
+   per il layer da 14 a 27 il threshold della perplexity diventa 0.6  e il topE diventa 12
+   per i restanti il PerpT (perplexity threshold diventa 0.5) e il topE diventa 20 
+
+in questa prima fase non pensiamo al looping
+
+si riesegono gli stesi run del primo test della fase 1 e si confronta la perplexity per layer e l'ouput risultante 
+dei run 
+
+
+
+

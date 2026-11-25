@@ -25,6 +25,7 @@ import mlx.core as mx
 
 from .models.cache import ArraysCache, QuantizedKVCache
 from .moe_expansion import ExpertUsage, MoERuntime
+from .moe_liquid import RouterCapture
 from .sampler import make_sampler, make_logits_processors
 from .tokenizer import Tokenizer
 
@@ -195,11 +196,15 @@ class Engine:
         wrapup_text: str = _DEFAULT_WRAPUP,
         usage_dir: str = "./expertusage",
         model_name: str = "",
+        capture: Optional[RouterCapture] = None,
     ):
         self.loaded = loaded
         self.model = loaded.model
         self.tokenizer = tokenizer
         self.runtime: Optional[MoERuntime] = loaded.expansion
+        # router-distribution capture (liquid protocol phase 1): drained at
+        # the same sync points as the usage counters, saved per run
+        self.capture = capture
         self.ctx_size = ctx_size
         self.prefill_step_size = max(64, prefill_step_size)
         self.cache_type = cache_type
@@ -405,6 +410,8 @@ class Engine:
                     self._moe_observability(pos0, total)
                 if self.usage is not None:
                     self.usage.drain()
+                if self.capture is not None:
+                    self.capture.drain()
                 if cs + self.prefill_step_size < len(segment):
                     mx.eval(out)
             # sync the last chunk NOW so prefill_ms includes the GPU work
@@ -517,6 +524,8 @@ class Engine:
                 exp_last = exp_mean = None
                 if self.usage is not None:
                     self.usage.drain()
+                if self.capture is not None:
+                    self.capture.drain()
                 if self.runtime is not None:
                     self.runtime.note_tokens(1)
                     self._moe_observability(pos0, total)
@@ -753,7 +762,7 @@ class Engine:
     def moe_stats_summary(self) -> Optional[dict]:
         if self.runtime is None:
             return None
-        return {
+        summary = {
             "expansion_active": self.runtime.active or self.runtime.reduce_active,
             "experts_per_token_max": self.runtime.n if self.runtime.active else None,
             "native_top_k": self.runtime.k_native,
@@ -763,3 +772,13 @@ class Engine:
                 else None
             ),
         }
+        if self.runtime.liquid_active:
+            rules = self.runtime.liquid
+            summary.update(
+                {
+                    "liquid_active": True,
+                    "liquid_index": rules.index,
+                    "liquid_bands": [b.to_dict() for b in rules.bands],
+                }
+            )
+        return summary
